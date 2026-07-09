@@ -8,6 +8,7 @@ For each task create branch and PR. Work until PR actions are not green.
 
 Keep code simple. Try to keep each feature in separated folder in service layer. Try to write orthogonal code.
 Don't use protocols without reason, prefer normal classes.
+Don't use dataclasses. Use pydantic models for structured data.
 
 Use mypy heavily. Type all input/output parameters.
 Use linters heavily.

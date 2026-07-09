@@ -1,8 +1,9 @@
-from dataclasses import dataclass
+from pydantic import BaseModel, ConfigDict
 
 
-@dataclass(frozen=True)
-class HealthStatus:
+class HealthStatus(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     status: str
 
 
