@@ -13,7 +13,7 @@ Services:
 
 - Backend: http://localhost:8000
 - Frontend: http://localhost:5173
-- Postgres: localhost:5432
+- Postgres: localhost:5433
 
 ## Backend Checks
 
