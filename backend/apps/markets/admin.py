@@ -19,11 +19,12 @@ class PolymarketMarketAdmin(PolymarketMarketAdminBase):
         "active",
         "closed",
         "accepting_orders",
+        "sync_prices",
         "market_created_at",
         "volume",
         "liquidity",
     )
-    list_filter = ("active", "closed", "archived", "restricted", "accepting_orders")
+    list_filter = ("sync_prices", "active", "closed", "archived", "restricted", "accepting_orders")
     search_fields = ("external_id", "condition_id", "slug", "question")
     readonly_fields = ("first_synced_at", "last_synced_at", "raw_payload")
     ordering = ("-market_created_at", "-external_id")

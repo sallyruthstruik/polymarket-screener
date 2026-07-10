@@ -25,6 +25,10 @@ django_settings_module = "config.settings"
 module = ["*.migrations.*"]
 ignore_errors = true
 
+[[tool.mypy.overrides]]
+module = ["clickhouse_connect.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings"
 pythonpath = ["backend"]

@@ -1,6 +1,8 @@
 import json
 from collections.abc import Iterator
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
+from typing import Literal
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -15,6 +17,24 @@ class PolymarketGammaMarket(BaseModel):
     external_id: str
     created_at: datetime | None
     payload: JsonObject
+
+
+type PolymarketPriceSide = Literal["BUY", "SELL"]
+
+
+class PolymarketPriceRequest(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    token_id: str
+    side: PolymarketPriceSide
+
+
+class PolymarketTokenPrice(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    token_id: str
+    side: PolymarketPriceSide
+    price: Decimal
 
 
 class PolymarketGammaClient:
@@ -124,3 +144,68 @@ class PolymarketGammaClient:
         if value is None:
             return None
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+class PolymarketClobPriceClient:
+    def __init__(self, base_url: str = "https://clob.polymarket.com") -> None:
+        self.base_url = base_url.rstrip("/")
+
+    def fetch_prices(self, requests: list[PolymarketPriceRequest]) -> list[PolymarketTokenPrice]:
+        if not requests:
+            return []
+
+        body = json.dumps(
+            [{"token_id": request.token_id, "side": request.side} for request in requests]
+        ).encode("utf-8")
+        request = Request(
+            f"{self.base_url}/prices",
+            data=body,
+            method="POST",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "polymarket-screener/1.0",
+            },
+        )
+        with urlopen(request, timeout=30) as response:
+            response_body = response.read().decode("utf-8")
+
+        return self._parse_prices_response(self._load_json_object(response_body), requests)
+
+    def _load_json_object(self, body: str) -> JsonObject:
+        parsed: object = json.loads(body)
+        if not isinstance(parsed, dict):
+            msg = "CLOB prices response is not a JSON object"
+            raise ValueError(msg)
+        return parsed
+
+    def _parse_prices_response(
+        self,
+        payload: JsonObject,
+        requests: list[PolymarketPriceRequest],
+    ) -> list[PolymarketTokenPrice]:
+        prices: list[PolymarketTokenPrice] = []
+        for request in requests:
+            token_prices = payload.get(request.token_id)
+            if not isinstance(token_prices, dict):
+                continue
+            raw_price = token_prices.get(request.side)
+            price = self._parse_decimal(raw_price)
+            if price is None:
+                continue
+            prices.append(
+                PolymarketTokenPrice(
+                    token_id=request.token_id,
+                    side=request.side,
+                    price=price,
+                )
+            )
+        return prices
+
+    def _parse_decimal(self, value: object) -> Decimal | None:
+        if not isinstance(value, int | float | str) or value == "":
+            return None
+        try:
+            return Decimal(str(value))
+        except InvalidOperation:
+            return None
