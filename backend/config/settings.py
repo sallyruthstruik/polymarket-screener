@@ -66,6 +66,14 @@ DATABASES = {
     }
 }
 
+CLICKHOUSE = {
+    "HOST": env_str("CLICKHOUSE_HOST", "localhost"),
+    "PORT": env_str("CLICKHOUSE_PORT", "8123"),
+    "DATABASE": env_str("CLICKHOUSE_DATABASE", "polymarket_screener"),
+    "USER": env_str("CLICKHOUSE_USER", "polymarket_screener"),
+    "PASSWORD": env_str("CLICKHOUSE_PASSWORD", "polymarket_screener"),
+}
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
