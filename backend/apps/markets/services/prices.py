@@ -1,7 +1,7 @@
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any
 
 import clickhouse_connect
 from django.conf import settings
@@ -27,7 +27,7 @@ class ClickHouseSettings(BaseModel):
 
     @classmethod
     def from_django_settings(cls) -> "ClickHouseSettings":
-        raw_settings = cast(dict[str, str], settings.CLICKHOUSE)
+        raw_settings: dict[str, str] = settings.CLICKHOUSE
         return cls(
             host=raw_settings["HOST"],
             port=int(raw_settings["PORT"]),
