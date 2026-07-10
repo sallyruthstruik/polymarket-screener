@@ -9,6 +9,8 @@ If a question can be answered by exploring the codebase, explore the codebase in
 
 For each task create branch and PR. Work until PR actions are green.
 
+DO NOT CREATE WORKTREES BY YOURSELF. Only checkout branch, or ask user if he wants to create worktree.
+
 # Code
 
 Keep code simple. Try to keep each feature in separated folder in service layer. Try to write orthogonal code.
