@@ -1,6 +1,6 @@
 import json
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 from urllib.parse import urlencode
@@ -34,6 +34,13 @@ class PolymarketTokenPrice(BaseModel):
 
     token_id: str
     side: PolymarketPriceSide
+    price: Decimal
+
+
+class PolymarketPriceHistoryPoint(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    timestamp: datetime
     price: Decimal
 
 
@@ -172,6 +179,35 @@ class PolymarketClobPriceClient:
 
         return self._parse_prices_response(self._load_json_object(response_body), requests)
 
+    def fetch_price_history(
+        self,
+        *,
+        token_id: str,
+        start_timestamp: datetime,
+        end_timestamp: datetime,
+        fidelity_minutes: int,
+    ) -> list[PolymarketPriceHistoryPoint]:
+        params = {
+            "market": token_id,
+            "startTs": str(int(start_timestamp.timestamp())),
+            "endTs": str(int(end_timestamp.timestamp())),
+            "fidelity": str(fidelity_minutes),
+        }
+        request = Request(
+            f"{self.base_url}/prices-history?{urlencode(params)}",
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "polymarket-screener/1.0",
+            },
+        )
+        with urlopen(request, timeout=30) as response:
+            response_body = response.read().decode("utf-8")
+
+        return self._parse_price_history_response(
+            self._load_json_object(response_body),
+            end_timestamp=end_timestamp,
+        )
+
     def _load_json_object(self, body: str) -> JsonObject:
         parsed: object = json.loads(body)
         if not isinstance(parsed, dict):
@@ -209,3 +245,40 @@ class PolymarketClobPriceClient:
             return Decimal(str(value))
         except InvalidOperation:
             return None
+
+    def _parse_price_history_response(
+        self,
+        payload: JsonObject,
+        *,
+        end_timestamp: datetime,
+    ) -> list[PolymarketPriceHistoryPoint]:
+        raw_history = payload.get("history")
+        if not isinstance(raw_history, list):
+            msg = "CLOB prices-history response does not contain a history list"
+            raise ValueError(msg)
+
+        history: list[PolymarketPriceHistoryPoint] = []
+        max_timestamp = end_timestamp.timestamp()
+        for raw_point in raw_history:
+            if not isinstance(raw_point, dict):
+                msg = "CLOB prices-history response contains a non-object history point"
+                raise ValueError(msg)
+
+            raw_timestamp = raw_point.get("t")
+            raw_price = raw_point.get("p")
+            if not isinstance(raw_timestamp, int | float):
+                continue
+            price = self._parse_decimal(raw_price)
+            if price is None:
+                continue
+
+            if float(raw_timestamp) > max_timestamp:
+                continue
+
+            history.append(
+                PolymarketPriceHistoryPoint(
+                    timestamp=datetime.fromtimestamp(float(raw_timestamp), tz=UTC),
+                    price=price,
+                )
+            )
+        return history

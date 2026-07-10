@@ -1,18 +1,14 @@
 from collections.abc import Iterable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 import clickhouse_connect
 from django.conf import settings
 from django.utils import timezone
 from pydantic import BaseModel, ConfigDict
 
-from apps.markets.clients.polymarket import (
-    PolymarketClobPriceClient,
-    PolymarketPriceRequest,
-    PolymarketTokenPrice,
-)
+from apps.markets.clients.polymarket import PolymarketClobPriceClient, PolymarketPriceHistoryPoint
 from apps.markets.models import PolymarketMarket
 
 
@@ -59,8 +55,28 @@ class ClickHouseClient:
     ) -> None:
         self._client.insert(table, rows, column_names=column_names)
 
+    def query(
+        self,
+        query: str,
+        parameters: dict[str, object] | None = None,
+    ) -> Sequence[Sequence[object]]:
+        result: Any = self._client.query(query, parameters=parameters)
+        return cast(Sequence[Sequence[object]], result.result_rows)
+
 
 class PolymarketPriceObservation(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    observed_at: datetime
+    market_external_id: str
+    condition_id: str
+    token_id: str
+    side: str
+    price: Decimal
+    source: str
+
+
+class PolymarketPriceInspectionRow(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     observed_at: datetime
@@ -82,6 +98,8 @@ class PolymarketPriceSyncResult(BaseModel):
 
 class PolymarketPriceStorageService:
     table_name = "polymarket_prices"
+    history_source = "clob_prices_history"
+    history_side = "MID"
     column_names = (
         "observed_at",
         "market_external_id",
@@ -132,6 +150,89 @@ class PolymarketPriceStorageService:
         self.client.insert(self.table_name, rows, self.column_names)
         return len(rows)
 
+    def get_latest_history_timestamp(self, *, token_id: str) -> datetime | None:
+        rows = self.client.query(
+            f"""
+            SELECT max(observed_at)
+            FROM {self.table_name}
+            WHERE token_id = %(token_id)s
+              AND side = %(side)s
+              AND source = %(source)s
+            """,
+            parameters={
+                "token_id": token_id,
+                "side": self.history_side,
+                "source": self.history_source,
+            },
+        )
+        if not rows:
+            return None
+        raw_timestamp = rows[0][0]
+        if not isinstance(raw_timestamp, datetime):
+            return None
+        if timezone.is_naive(raw_timestamp):
+            return timezone.make_aware(raw_timestamp, UTC)
+        return raw_timestamp.astimezone(UTC)
+
+    def list_observations(
+        self,
+        *,
+        market_external_id: str | None = None,
+        token_id: str | None = None,
+        limit: int = 100,
+    ) -> list[PolymarketPriceInspectionRow]:
+        filters = ["1 = 1"]
+        parameters: dict[str, object] = {"limit": limit}
+        if market_external_id is not None:
+            filters.append("market_external_id = %(market_external_id)s")
+            parameters["market_external_id"] = market_external_id
+        if token_id is not None:
+            filters.append("token_id = %(token_id)s")
+            parameters["token_id"] = token_id
+
+        rows = self.client.query(
+            f"""
+            SELECT observed_at, market_external_id, condition_id, token_id, side, price, source
+            FROM {self.table_name}
+            WHERE {' AND '.join(filters)}
+            ORDER BY observed_at DESC
+            LIMIT %(limit)s
+            """,
+            parameters=parameters,
+        )
+
+        observations: list[PolymarketPriceInspectionRow] = []
+        for row in rows:
+            observed_at, market_id, condition_id, row_token_id, side, price, source = row
+            if not isinstance(observed_at, datetime):
+                continue
+            parsed_price = self._parse_price_decimal(price)
+            if parsed_price is None:
+                continue
+            observations.append(
+                PolymarketPriceInspectionRow(
+                    observed_at=self._normalize_observed_at(observed_at),
+                    market_external_id=str(market_id),
+                    condition_id=str(condition_id),
+                    token_id=str(row_token_id),
+                    side=str(side),
+                    price=parsed_price,
+                    source=str(source),
+                )
+            )
+        return observations
+
+    def _parse_price_decimal(self, value: object) -> Decimal | None:
+        if isinstance(value, Decimal):
+            return value
+        if isinstance(value, int | float | str):
+            return Decimal(str(value))
+        return None
+
+    def _normalize_observed_at(self, observed_at: datetime) -> datetime:
+        if timezone.is_naive(observed_at):
+            return timezone.make_aware(observed_at, UTC)
+        return observed_at.astimezone(UTC)
 
 class PolymarketPriceSyncService:
     def __init__(
@@ -148,6 +249,8 @@ class PolymarketPriceSyncService:
         *,
         batch_size: int = 500,
         max_markets: int | None = None,
+        fidelity_minutes: int = 1,
+        chunk_size_minutes: int = 60 * 24,
     ) -> PolymarketPriceSyncResult:
         self.storage.ensure_table()
 
@@ -160,21 +263,60 @@ class PolymarketPriceSyncService:
             max_markets=max_markets,
         ):
             market_count += len(market_batch)
-            requests_by_token = self._build_price_requests(market_batch)
-            token_ids_seen.update(token_id for token_id, _side in requests_by_token)
-            prices = self.clob_client.fetch_prices(list(requests_by_token.values()))
-            observations = self._build_observations(
-                markets=market_batch,
-                prices=prices,
-                observed_at=timezone.now(),
-            )
-            price_count += self.storage.insert_observations(observations)
+            for market in market_batch:
+                for token_id in self._get_token_ids(market):
+                    token_ids_seen.add(token_id)
+                    price_count += self._sync_token_history(
+                        market=market,
+                        token_id=token_id,
+                        fidelity_minutes=fidelity_minutes,
+                        chunk_size_minutes=chunk_size_minutes,
+                    )
 
         return PolymarketPriceSyncResult(
             market_count=market_count,
             token_count=len(token_ids_seen),
             price_count=price_count,
         )
+
+    def _sync_token_history(
+        self,
+        *,
+        market: PolymarketMarket,
+        token_id: str,
+        fidelity_minutes: int,
+        chunk_size_minutes: int,
+    ) -> int:
+        start_timestamp = self._get_history_start_timestamp(
+            market=market,
+            token_id=token_id,
+            fidelity_minutes=fidelity_minutes,
+        )
+        end_timestamp = timezone.now().astimezone(UTC)
+        if start_timestamp > end_timestamp:
+            return 0
+
+        inserted_count = 0
+        current_start = start_timestamp
+        chunk_delta = timedelta(minutes=chunk_size_minutes)
+
+        while current_start <= end_timestamp:
+            current_end = min(current_start + chunk_delta, end_timestamp)
+            history = self.clob_client.fetch_price_history(
+                token_id=token_id,
+                start_timestamp=current_start,
+                end_timestamp=current_end,
+                fidelity_minutes=fidelity_minutes,
+            )
+            observations = self._build_history_observations(
+                market=market,
+                token_id=token_id,
+                history=history,
+            )
+            inserted_count += self.storage.insert_observations(observations)
+            current_start = current_end + timedelta(minutes=fidelity_minutes)
+
+        return inserted_count
 
     def _iter_market_batches(
         self,
@@ -187,68 +329,57 @@ class PolymarketPriceSyncService:
             markets = markets[:max_markets]
 
         batch: list[PolymarketMarket] = []
+        request_count = 0
         for market in markets:
-            market_request_count = len(self._build_price_requests([market]))
-            if market_request_count == 0:
+            token_count = len(self._get_token_ids(market))
+            if token_count == 0:
                 continue
-            if batch and len(self._build_price_requests(batch)) + market_request_count > batch_size:
+            if batch and request_count + token_count > batch_size:
                 yield batch
                 batch = []
+                request_count = 0
             batch.append(market)
-            if len(self._build_price_requests(batch)) >= batch_size:
-                yield batch
-                batch = []
+            request_count += token_count
 
         if batch:
             yield batch
 
-    def _build_price_requests(
-        self,
-        markets: Sequence[PolymarketMarket],
-    ) -> dict[tuple[str, str], PolymarketPriceRequest]:
-        requests: dict[tuple[str, str], PolymarketPriceRequest] = {}
-        for market in markets:
-            for token_id in self._get_token_ids(market):
-                requests[(token_id, "BUY")] = PolymarketPriceRequest(token_id=token_id, side="BUY")
-                requests[(token_id, "SELL")] = PolymarketPriceRequest(
-                    token_id=token_id,
-                    side="SELL",
-                )
-        return requests
-
-    def _build_observations(
+    def _build_history_observations(
         self,
         *,
-        markets: Sequence[PolymarketMarket],
-        prices: Sequence[PolymarketTokenPrice],
-        observed_at: datetime,
+        market: PolymarketMarket,
+        token_id: str,
+        history: Sequence[PolymarketPriceHistoryPoint],
     ) -> list[PolymarketPriceObservation]:
-        normalized_observed_at = self._normalize_observed_at(observed_at)
-        markets_by_token = {
-            token_id: market for market in markets for token_id in self._get_token_ids(market)
-        }
-        observations: list[PolymarketPriceObservation] = []
-        for price in prices:
-            market = markets_by_token.get(price.token_id)
-            if market is None:
-                continue
-            observations.append(
-                PolymarketPriceObservation(
-                    observed_at=normalized_observed_at,
-                    market_external_id=market.external_id,
-                    condition_id=market.condition_id,
-                    token_id=price.token_id,
-                    side=price.side,
-                    price=price.price,
-                    source="clob_prices",
-                )
+        return [
+            PolymarketPriceObservation(
+                observed_at=self._normalize_observed_at(point.timestamp),
+                market_external_id=market.external_id,
+                condition_id=market.condition_id,
+                token_id=token_id,
+                side=self.storage.history_side,
+                price=point.price,
+                source=self.storage.history_source,
             )
-        return observations
+            for point in history
+        ]
+
+    def _get_history_start_timestamp(
+        self,
+        *,
+        market: PolymarketMarket,
+        token_id: str,
+        fidelity_minutes: int,
+    ) -> datetime:
+        latest_timestamp = self.storage.get_latest_history_timestamp(token_id=token_id)
+        if latest_timestamp is not None:
+            return latest_timestamp + timedelta(minutes=fidelity_minutes)
+
+        market_timestamp = market.market_created_at or market.start_date or timezone.now()
+        return self._normalize_observed_at(market_timestamp)
 
     def _get_token_ids(self, market: PolymarketMarket) -> list[str]:
         return [str(value) for value in market.clob_token_ids if isinstance(value, str) and value]
 
     def _normalize_observed_at(self, observed_at: datetime) -> datetime:
-        if timezone.is_naive(observed_at):
-            return timezone.make_aware(observed_at, UTC)
-        return observed_at.astimezone(UTC)
+        return self.storage._normalize_observed_at(observed_at)
