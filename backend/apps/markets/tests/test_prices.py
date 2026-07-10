@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from django.utils import timezone
 
 from apps.markets.clients.polymarket import PolymarketClobPriceClient, PolymarketPriceHistoryPoint
 from apps.markets.models import PolymarketMarket
@@ -31,7 +32,6 @@ def test_price_sync_service_uses_only_markets_enabled_for_price_sync() -> None:
         storage=storage,
     ).sync_prices(
         batch_size=10,
-        fidelity_minutes=60,
         chunk_size_minutes=60 * 24,
     )
 
@@ -47,7 +47,7 @@ def test_price_sync_service_uses_only_markets_enabled_for_price_sync() -> None:
         enabled_market.external_id,
     ]
     assert all(observation.side == "MID" for observation in storage.observations)
-    assert all(observation.source == "clob_prices_history" for observation in storage.observations)
+    assert {observation.source for observation in storage.observations} == {"clob_prices_history_60m"}
 
 
 @pytest.mark.django_db
@@ -66,20 +66,74 @@ def test_price_sync_service_resumes_from_latest_history_timestamp() -> None:
         storage=storage,
     ).sync_prices(
         batch_size=10,
-        fidelity_minutes=60,
         chunk_size_minutes=60 * 24,
     )
 
     assert len(clob_client.history_requests) == 2
     expected_start_timestamp = latest_timestamp + timedelta(minutes=60)
+    hourly_requests = [
+        request for request in clob_client.history_requests if request["fidelity_minutes"] == 60
+    ]
+    assert len(hourly_requests) == 2
     assert all(
         request["start_timestamp"] == expected_start_timestamp
-        for request in clob_client.history_requests
+        for request in hourly_requests
     )
     assert all(
         observation.market_external_id == market.external_id
         for observation in storage.observations
     )
+
+
+@pytest.mark.django_db
+def test_price_sync_service_uses_daily_backfill_for_older_history() -> None:
+    old_market = _create_market(
+        external_id="1",
+        sync_prices=True,
+        market_created_at=timezone.now().astimezone(UTC) - timedelta(days=45),
+    )
+    clob_client = FakeClobPriceClient()
+    storage = FakePriceStorageService()
+
+    result = PolymarketPriceSyncService(
+        clob_client=clob_client,
+        storage=storage,
+    ).sync_prices(
+        batch_size=10,
+        chunk_size_minutes=60 * 24,
+    )
+
+    assert result.price_count > 4
+    assert len(clob_client.history_requests) > 2
+    assert {request["fidelity_minutes"] for request in clob_client.history_requests} == {60, 1440}
+    assert {observation.source for observation in storage.observations} == {
+        "clob_prices_history_60m",
+        "clob_prices_history_1440m",
+    }
+    assert all(observation.market_external_id == old_market.external_id for observation in storage.observations)
+
+
+@pytest.mark.django_db
+def test_price_sync_service_can_force_single_resolution() -> None:
+    _create_market(
+        external_id="1",
+        sync_prices=True,
+        market_created_at=datetime(2026, 7, 10, 11, 0, tzinfo=UTC),
+    )
+    clob_client = FakeClobPriceClient()
+    storage = FakePriceStorageService()
+
+    PolymarketPriceSyncService(
+        clob_client=clob_client,
+        storage=storage,
+    ).sync_prices(
+        batch_size=10,
+        fidelity_minutes=60,
+        chunk_size_minutes=60 * 24,
+    )
+
+    assert len(clob_client.history_requests) == 2
+    assert all(request["fidelity_minutes"] == 60 for request in clob_client.history_requests)
 
 
 def test_clob_price_client_parses_price_history_response() -> None:
@@ -131,7 +185,10 @@ def test_price_storage_creates_table_inserts_rows_and_reads_latest_history_times
             )
         ]
     )
-    latest_timestamp = storage.get_latest_history_timestamp(token_id="token-1")
+    latest_timestamp = storage.get_latest_history_timestamp(
+        token_id="token-1",
+        source="clob_prices_history_60m",
+    )
 
     assert inserted_count == 1
     assert "CREATE TABLE IF NOT EXISTS polymarket_prices" in clickhouse_client.commands[0]
@@ -232,8 +289,10 @@ class FakePriceStorageService(PolymarketPriceStorageService):
         self.observations.extend(observations)
         return len(observations)
 
-    def get_latest_history_timestamp(self, *, token_id: str) -> datetime | None:
-        return self.latest_history_timestamp
+    def get_latest_history_timestamp(self, *, token_id: str, source: str) -> datetime | None:
+        if source == "clob_prices_history_60m":
+            return self.latest_history_timestamp
+        return None
 
 
 class FakeClickHouseClient(ClickHouseClient):

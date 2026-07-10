@@ -96,9 +96,15 @@ class PolymarketPriceSyncResult(BaseModel):
     price_count: int
 
 
+class PolymarketPriceResolution(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    fidelity_minutes: int
+    lookback: timedelta | None
+
+
 class PolymarketPriceStorageService:
     table_name = "polymarket_prices"
-    history_source = "clob_prices_history"
     history_side = "MID"
     column_names = (
         "observed_at",
@@ -150,7 +156,7 @@ class PolymarketPriceStorageService:
         self.client.insert(self.table_name, rows, self.column_names)
         return len(rows)
 
-    def get_latest_history_timestamp(self, *, token_id: str) -> datetime | None:
+    def get_latest_history_timestamp(self, *, token_id: str, source: str) -> datetime | None:
         rows = self.client.query(
             f"""
             SELECT max(observed_at)
@@ -162,7 +168,7 @@ class PolymarketPriceStorageService:
             parameters={
                 "token_id": token_id,
                 "side": self.history_side,
-                "source": self.history_source,
+                "source": source,
             },
         )
         if not rows:
@@ -235,6 +241,17 @@ class PolymarketPriceStorageService:
         return observed_at.astimezone(UTC)
 
 class PolymarketPriceSyncService:
+    default_resolutions = (
+        PolymarketPriceResolution(
+            fidelity_minutes=60,
+            lookback=timedelta(days=30),
+        ),
+        PolymarketPriceResolution(
+            fidelity_minutes=60 * 24,
+            lookback=None,
+        ),
+    )
+
     def __init__(
         self,
         *,
@@ -249,7 +266,7 @@ class PolymarketPriceSyncService:
         *,
         batch_size: int = 500,
         max_markets: int | None = None,
-        fidelity_minutes: int = 60,
+        fidelity_minutes: int | None = None,
         chunk_size_minutes: int = 60 * 24,
     ) -> PolymarketPriceSyncResult:
         self.storage.ensure_table()
@@ -257,6 +274,7 @@ class PolymarketPriceSyncService:
         price_count = 0
         market_count = 0
         token_ids_seen: set[str] = set()
+        resolutions = self._get_resolutions(fidelity_minutes)
 
         for market_batch in self._iter_market_batches(
             batch_size=batch_size,
@@ -266,12 +284,14 @@ class PolymarketPriceSyncService:
             for market in market_batch:
                 for token_id in self._get_token_ids(market):
                     token_ids_seen.add(token_id)
-                    price_count += self._sync_token_history(
-                        market=market,
-                        token_id=token_id,
-                        fidelity_minutes=fidelity_minutes,
-                        chunk_size_minutes=chunk_size_minutes,
-                    )
+                    for resolution in resolutions:
+                        price_count += self._sync_token_history(
+                            market=market,
+                            token_id=token_id,
+                            resolution=resolution,
+                            chunk_size_minutes=chunk_size_minutes,
+                            single_resolution_mode=fidelity_minutes is not None,
+                        )
 
         return PolymarketPriceSyncResult(
             market_count=market_count,
@@ -284,15 +304,19 @@ class PolymarketPriceSyncService:
         *,
         market: PolymarketMarket,
         token_id: str,
-        fidelity_minutes: int,
+        resolution: PolymarketPriceResolution,
         chunk_size_minutes: int,
+        single_resolution_mode: bool,
     ) -> int:
         start_timestamp = self._get_history_start_timestamp(
             market=market,
             token_id=token_id,
-            fidelity_minutes=fidelity_minutes,
+            resolution=resolution,
         )
-        end_timestamp = timezone.now().astimezone(UTC)
+        end_timestamp = self._get_history_end_timestamp(
+            resolution=resolution,
+            single_resolution_mode=single_resolution_mode,
+        )
         if start_timestamp > end_timestamp:
             return 0
 
@@ -306,15 +330,16 @@ class PolymarketPriceSyncService:
                 token_id=token_id,
                 start_timestamp=current_start,
                 end_timestamp=current_end,
-                fidelity_minutes=fidelity_minutes,
+                fidelity_minutes=resolution.fidelity_minutes,
             )
             observations = self._build_history_observations(
                 market=market,
                 token_id=token_id,
                 history=history,
+                resolution=resolution,
             )
             inserted_count += self.storage.insert_observations(observations)
-            current_start = current_end + timedelta(minutes=fidelity_minutes)
+            current_start = current_end + timedelta(minutes=resolution.fidelity_minutes)
 
         return inserted_count
 
@@ -350,6 +375,7 @@ class PolymarketPriceSyncService:
         market: PolymarketMarket,
         token_id: str,
         history: Sequence[PolymarketPriceHistoryPoint],
+        resolution: PolymarketPriceResolution,
     ) -> list[PolymarketPriceObservation]:
         return [
             PolymarketPriceObservation(
@@ -359,7 +385,7 @@ class PolymarketPriceSyncService:
                 token_id=token_id,
                 side=self.storage.history_side,
                 price=point.price,
-                source=self.storage.history_source,
+                source=self._get_history_source(resolution.fidelity_minutes),
             )
             for point in history
         ]
@@ -369,14 +395,63 @@ class PolymarketPriceSyncService:
         *,
         market: PolymarketMarket,
         token_id: str,
-        fidelity_minutes: int,
+        resolution: PolymarketPriceResolution,
     ) -> datetime:
-        latest_timestamp = self.storage.get_latest_history_timestamp(token_id=token_id)
+        latest_timestamp = self.storage.get_latest_history_timestamp(
+            token_id=token_id,
+            source=self._get_history_source(resolution.fidelity_minutes),
+        )
         if latest_timestamp is not None:
-            return latest_timestamp + timedelta(minutes=fidelity_minutes)
+            return latest_timestamp + timedelta(minutes=resolution.fidelity_minutes)
 
         market_timestamp = market.market_created_at or market.start_date or timezone.now()
-        return self._normalize_observed_at(market_timestamp)
+        normalized_market_timestamp = self._normalize_observed_at(market_timestamp)
+        resolution_start = self._get_resolution_start_timestamp(resolution=resolution)
+        if resolution_start is None:
+            return normalized_market_timestamp
+        return max(
+            normalized_market_timestamp,
+            resolution_start,
+        )
+
+    def _get_history_end_timestamp(
+        self,
+        *,
+        resolution: PolymarketPriceResolution,
+        single_resolution_mode: bool,
+    ) -> datetime:
+        now = timezone.now().astimezone(UTC)
+        if single_resolution_mode:
+            return now
+        if resolution.lookback is None and self.default_resolutions:
+            previous_resolution = self.default_resolutions[0]
+            previous_resolution_start = self._get_resolution_start_timestamp(
+                resolution=previous_resolution
+            )
+            if previous_resolution_start is None:
+                return now
+            return previous_resolution_start - timedelta(minutes=1)
+        return now
+
+    def _get_resolution_start_timestamp(
+        self,
+        *,
+        resolution: PolymarketPriceResolution,
+    ) -> datetime | None:
+        if resolution.lookback is None:
+            return None
+        return timezone.now().astimezone(UTC) - resolution.lookback
+
+    def _get_resolutions(
+        self,
+        fidelity_minutes: int | None,
+    ) -> tuple[PolymarketPriceResolution, ...]:
+        if fidelity_minutes is not None:
+            return (PolymarketPriceResolution(fidelity_minutes=fidelity_minutes, lookback=None),)
+        return self.default_resolutions
+
+    def _get_history_source(self, fidelity_minutes: int) -> str:
+        return f"clob_prices_history_{fidelity_minutes}m"
 
     def _get_token_ids(self, market: PolymarketMarket) -> list[str]:
         return [str(value) for value in market.clob_token_ids if isinstance(value, str) and value]

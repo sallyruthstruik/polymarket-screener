@@ -24,8 +24,11 @@ class Command(BaseCommand):
         parser.add_argument(
             "--fidelity-minutes",
             type=int,
-            default=60,
-            help="Price history fidelity in minutes.",
+            default=None,
+            help=(
+                "Optional fixed price history fidelity in minutes. "
+                "Defaults to mixed hourly and daily sync."
+            ),
         )
         parser.add_argument(
             "--chunk-size-minutes",
@@ -46,10 +49,11 @@ class Command(BaseCommand):
         if limit is not None and limit < 1:
             msg = "--limit must be greater than 0"
             raise CommandError(msg)
-        if fidelity_minutes < 1:
+        if fidelity_minutes is not None and fidelity_minutes < 1:
             msg = "--fidelity-minutes must be greater than 0"
             raise CommandError(msg)
-        if chunk_size_minutes < fidelity_minutes:
+        minimum_chunk_size = fidelity_minutes if fidelity_minutes is not None else 60 * 24
+        if chunk_size_minutes < minimum_chunk_size:
             msg = "--chunk-size-minutes must be greater than or equal to --fidelity-minutes"
             raise CommandError(msg)
 

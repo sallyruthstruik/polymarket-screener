@@ -50,7 +50,7 @@ class FakePriceSyncService:
         *,
         batch_size: int = 500,
         max_markets: int | None = None,
-        fidelity_minutes: int = 60,
+        fidelity_minutes: int | None = None,
         chunk_size_minutes: int = 60 * 24,
     ) -> PolymarketPriceSyncResult:
         self.calls.append(
@@ -105,10 +105,8 @@ def test_sync_polymarket_prices_command_uses_service_options(
         "sync_polymarket_prices",
         "--batch-size",
         "10",
-        "--fidelity-minutes",
-        "60",
         "--chunk-size-minutes",
-        "60",
+        "1440",
         "--limit",
         "2",
         stdout=stdout,
@@ -117,8 +115,8 @@ def test_sync_polymarket_prices_command_uses_service_options(
     assert len(FakePriceSyncService.calls) == 1
     assert FakePriceSyncService.calls[0]["batch_size"] == 10
     assert FakePriceSyncService.calls[0]["max_markets"] == 2
-    assert FakePriceSyncService.calls[0]["fidelity_minutes"] == 60
-    assert FakePriceSyncService.calls[0]["chunk_size_minutes"] == 60
+    assert FakePriceSyncService.calls[0]["fidelity_minutes"] is None
+    assert FakePriceSyncService.calls[0]["chunk_size_minutes"] == 1440
     assert "markets=2, tokens=4, prices=8" in stdout.getvalue()
 
 
