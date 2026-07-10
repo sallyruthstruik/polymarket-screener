@@ -3,9 +3,15 @@ from io import StringIO
 from typing import ClassVar
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
+import pytest
 from pytest import MonkeyPatch
 
-from apps.markets.management.commands import sync_polymarket_markets, sync_polymarket_prices
+from apps.markets.management.commands import (
+    sync_polymarket_markets,
+    sync_polymarket_prices,
+)
+from apps.markets.models import PolymarketMarket
 from apps.markets.services.polymarket import PolymarketMarketSyncResult
 from apps.markets.services.prices import PolymarketPriceSyncResult
 
@@ -104,3 +110,71 @@ def test_sync_polymarket_prices_command_uses_service_options(
     assert FakePriceSyncService.calls[0]["batch_size"] == 10
     assert FakePriceSyncService.calls[0]["max_markets"] == 2
     assert "markets=2, tokens=4, prices=8" in stdout.getvalue()
+
+
+def test_set_polymarket_market_sync_prices_updates_selected_markets(db: None) -> None:
+    enabled_market = _create_market(external_id="1", sync_prices=False)
+    untouched_market = _create_market(external_id="2", sync_prices=False)
+    stdout = StringIO()
+
+    call_command(
+        "set_polymarket_market_sync_prices",
+        "1",
+        "--enabled",
+        "true",
+        stdout=stdout,
+    )
+
+    enabled_market.refresh_from_db()
+    untouched_market.refresh_from_db()
+    assert enabled_market.sync_prices is True
+    assert untouched_market.sync_prices is False
+    assert "enabled=True, updated=1" in stdout.getvalue()
+
+
+def test_set_polymarket_market_sync_prices_updates_all_markets(db: None) -> None:
+    first_market = _create_market(external_id="1", sync_prices=False)
+    second_market = _create_market(external_id="2", sync_prices=False)
+    stdout = StringIO()
+
+    call_command(
+        "set_polymarket_market_sync_prices",
+        "--all",
+        "--enabled",
+        "true",
+        stdout=stdout,
+    )
+
+    first_market.refresh_from_db()
+    second_market.refresh_from_db()
+    assert first_market.sync_prices is True
+    assert second_market.sync_prices is True
+    assert "enabled=True, updated=2" in stdout.getvalue()
+
+
+def test_set_polymarket_market_sync_prices_rejects_invalid_selection() -> None:
+    with pytest.raises(CommandError, match="Pass either external ids or --all, not both"):
+        call_command(
+            "set_polymarket_market_sync_prices",
+            "1",
+            "--all",
+            "--enabled",
+            "true",
+        )
+
+
+def _create_market(*, external_id: str, sync_prices: bool) -> PolymarketMarket:
+    return PolymarketMarket.objects.create(
+        external_id=external_id,
+        condition_id=f"condition-{external_id}",
+        slug=f"market-{external_id}",
+        question=f"Market {external_id}",
+        active=True,
+        closed=False,
+        archived=False,
+        restricted=False,
+        accepting_orders=True,
+        clob_token_ids=[f"token-{external_id}-yes", f"token-{external_id}-no"],
+        sync_prices=sync_prices,
+        raw_payload={},
+    )
