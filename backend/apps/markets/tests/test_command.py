@@ -184,5 +184,4 @@ def _create_market(*, external_id: str, sync_prices: bool) -> PolymarketMarket:
         accepting_orders=True,
         clob_token_ids=[f"token-{external_id}-yes", f"token-{external_id}-no"],
         sync_prices=sync_prices,
-        raw_payload={},
     )

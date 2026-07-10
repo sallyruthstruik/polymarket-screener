@@ -7,8 +7,8 @@ from django.utils import timezone
 
 from apps.markets.clients.polymarket import PolymarketClobPriceClient, PolymarketPriceHistoryPoint
 from apps.markets.models import PolymarketMarket
+from apps.markets.services.clickhouse import ClickHouseClient
 from apps.markets.services.prices import (
-    ClickHouseClient,
     PolymarketPriceInspectionRow,
     PolymarketPriceObservation,
     PolymarketPriceStorageService,
@@ -354,5 +354,4 @@ def _create_market(
         market_created_at=market_created_at,
         clob_token_ids=[f"token-{external_id}-yes", f"token-{external_id}-no"],
         sync_prices=sync_prices,
-        raw_payload={},
     )

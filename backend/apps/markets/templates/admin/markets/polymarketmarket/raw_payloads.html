@@ -1,0 +1,57 @@
+{% extends "admin/base_site.html" %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Home</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+    &rsaquo; <a href="{% url 'admin:markets_polymarketmarket_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+    &rsaquo; Inspect raw payloads
+  </div>
+{% endblock %}
+
+{% block content %}
+  <div id="content-main">
+    <form method="get" style="margin-bottom: 1rem;">
+      <div style="display: flex; gap: 1rem; align-items: end; flex-wrap: wrap;">
+        <div>
+          <label for="id_market_external_id">Market external id</label><br>
+          <input id="id_market_external_id" type="text" name="market_external_id" value="{{ filters.market_external_id }}">
+        </div>
+        <div>
+          <label for="id_limit">Row limit</label><br>
+          <input id="id_limit" type="number" min="1" max="500" name="limit" value="{{ filters.limit }}">
+        </div>
+        <div>
+          <button type="submit" class="button">Apply</button>
+        </div>
+      </div>
+    </form>
+
+    <table id="result_list">
+      <thead>
+        <tr>
+          <th>Synced at</th>
+          <th>Market</th>
+          <th>Condition</th>
+          <th>Slug</th>
+          <th>Payload</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for payload in payloads %}
+          <tr>
+            <td>{{ payload.synced_at }}</td>
+            <td>{{ payload.market_external_id }}</td>
+            <td>{{ payload.condition_id }}</td>
+            <td>{{ payload.slug }}</td>
+            <td><pre style="white-space: pre-wrap; margin: 0;">{{ payload.payload_json }}</pre></td>
+          </tr>
+        {% empty %}
+          <tr>
+            <td colspan="5">No raw payload rows found.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

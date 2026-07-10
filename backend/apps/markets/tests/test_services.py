@@ -1,4 +1,5 @@
-from collections.abc import Iterator
+import json
+from collections.abc import Iterator, Sequence
 from datetime import datetime
 from decimal import Decimal
 
@@ -6,7 +7,9 @@ import pytest
 
 from apps.markets.clients.polymarket import PolymarketGammaClient, PolymarketGammaMarket
 from apps.markets.models import PolymarketMarket
+from apps.markets.services.clickhouse import ClickHouseClient
 from apps.markets.services.polymarket import (
+    PolymarketMarketRawPayloadStorageService,
     PolymarketMarketStorageService,
     PolymarketMarketSyncService,
 )
@@ -66,6 +69,7 @@ def test_storage_service_upserts_market() -> None:
     assert second_result.market.question == "Updated question"
     assert second_result.market.liquidity == Decimal("1407.3168")
     assert PolymarketMarket.objects.count() == 1
+    assert not hasattr(PolymarketMarket.objects.get(), "raw_payload")
 
 
 class FakeGammaClient(PolymarketGammaClient):
@@ -92,11 +96,14 @@ class FakeGammaClient(PolymarketGammaClient):
 @pytest.mark.django_db
 def test_sync_service_includes_closed_markets_when_requested() -> None:
     client = FakeGammaClient()
-    service = PolymarketMarketSyncService(client=client)
+    raw_payload_storage = FakeRawPayloadStorageService()
+    service = PolymarketMarketSyncService(client=client, raw_payload_storage=raw_payload_storage)
 
     result = service.sync_markets(include_closed=True, page_size=2, max_markets=3)
 
     assert client.closed_filters == [False, True]
+    assert raw_payload_storage.table_ensured is True
+    assert len(raw_payload_storage.markets) == 3
     assert result.fetched_count == 3
     assert result.created_count == 2
     assert result.updated_count == 1
@@ -105,8 +112,69 @@ def test_sync_service_includes_closed_markets_when_requested() -> None:
 @pytest.mark.django_db
 def test_sync_service_defaults_to_open_markets() -> None:
     client = FakeGammaClient()
-    service = PolymarketMarketSyncService(client=client)
+    service = PolymarketMarketSyncService(
+        client=client,
+        raw_payload_storage=FakeRawPayloadStorageService(),
+    )
 
     service.sync_markets(include_closed=False, page_size=2, max_markets=1)
 
     assert client.closed_filters == [False]
+
+
+def test_raw_payload_storage_writes_clickhouse_row() -> None:
+    client = FakeClickHouseClient()
+    storage = PolymarketMarketRawPayloadStorageService(client=client)
+    payload = _market_payload(external_id="2869150", question="First question")
+
+    storage.ensure_table()
+    storage.insert_payload(_gamma_market(payload))
+
+    assert "CREATE TABLE IF NOT EXISTS polymarket_market_raw_payloads" in client.commands[0]
+    assert "ORDER BY (market_external_id, synced_at)" in client.commands[0]
+    assert client.insert_table == "polymarket_market_raw_payloads"
+    assert client.insert_column_names == (
+        "synced_at",
+        "market_external_id",
+        "condition_id",
+        "slug",
+        "payload_json",
+    )
+    inserted_row = client.insert_rows[0]
+    assert inserted_row[1] == "2869150"
+    assert inserted_row[2] == "condition-2869150"
+    assert inserted_row[3] == "market-2869150"
+    assert inserted_row[4] == json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+class FakeRawPayloadStorageService(PolymarketMarketRawPayloadStorageService):
+    def __init__(self) -> None:
+        self.table_ensured = False
+        self.markets: list[PolymarketGammaMarket] = []
+
+    def ensure_table(self) -> None:
+        self.table_ensured = True
+
+    def insert_payload(self, market: PolymarketGammaMarket) -> None:
+        self.markets.append(market)
+
+
+class FakeClickHouseClient(ClickHouseClient):
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+        self.insert_table = ""
+        self.insert_rows: list[tuple[object, ...]] = []
+        self.insert_column_names: tuple[str, ...] = ()
+
+    def command(self, query: str) -> None:
+        self.commands.append(query)
+
+    def insert(
+        self,
+        table: str,
+        rows: Sequence[Sequence[object]],
+        column_names: Sequence[str],
+    ) -> None:
+        self.insert_table = table
+        self.insert_rows = [tuple(row) for row in rows]
+        self.insert_column_names = tuple(column_names)
