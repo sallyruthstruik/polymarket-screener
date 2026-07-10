@@ -11,6 +11,10 @@ from django.test import RequestFactory
 
 from apps.markets.admin import PolymarketMarketAdmin
 from apps.markets.models import PolymarketMarket
+from apps.markets.services.polymarket import (
+    PolymarketMarketRawPayload,
+    PolymarketMarketRawPayloadStorageService,
+)
 from apps.markets.services.prices import (
     PolymarketPriceInspectionRow,
     PolymarketPriceStorageService,
@@ -38,7 +42,6 @@ def _create_market(*, external_id: str, sync_prices: bool) -> PolymarketMarket:
         accepting_orders=True,
         clob_token_ids=[f"token-{external_id}-yes", f"token-{external_id}-no"],
         sync_prices=sync_prices,
-        raw_payload={},
     )
 
 
@@ -128,6 +131,52 @@ def test_prices_view_bounds_invalid_limit() -> None:
     filters = admin_instance._parse_price_filters(request)
 
     assert filters.limit == 500
+
+
+def test_raw_payloads_view_returns_payloads(monkeypatch: Any) -> None:
+    admin_instance = PolymarketMarketAdmin(PolymarketMarket, AdminSite())
+
+    class FakeRawPayloadStorageService(PolymarketMarketRawPayloadStorageService):
+        def __init__(self) -> None:
+            return None
+
+        def list_payloads(
+            self,
+            *,
+            market_external_id: str | None = None,
+            limit: int = 100,
+        ) -> list[PolymarketMarketRawPayload]:
+            assert market_external_id == "1"
+            assert limit == 25
+            return [
+                PolymarketMarketRawPayload(
+                    synced_at=_create_market_timestamp(),
+                    market_external_id="1",
+                    condition_id="condition-1",
+                    slug="market-1",
+                    payload_json='{"id":"1"}',
+                )
+            ]
+
+    monkeypatch.setattr(
+        admin_instance,
+        "_get_raw_payload_storage",
+        lambda: FakeRawPayloadStorageService(),
+    )
+    request = RequestFactory().get(
+        "/admin/markets/polymarketmarket/raw-payloads/",
+        {"market_external_id": "1", "limit": "25"},
+    )
+    request.user = cast(Any, SimpleNamespace(is_active=True, is_staff=True))
+
+    response = admin_instance.raw_payloads_view(request)
+    context_data = response.context_data
+    assert context_data is not None
+
+    assert isinstance(response, TemplateResponse)
+    assert response.template_name == "admin/markets/polymarketmarket/raw_payloads.html"
+    assert len(context_data["payloads"]) == 1
+    assert context_data["filters"].limit == 25
 
 
 def _create_market_timestamp() -> datetime:

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 
 from apps.markets.clients.polymarket import PolymarketGammaClient, PolymarketGammaMarket
 from apps.markets.models import PolymarketMarket
+from apps.markets.services.clickhouse import ClickHouseClient
 from apps.markets.types import JsonList, JsonObject
 
 
@@ -30,7 +31,6 @@ class PolymarketMarketData(BaseModel):
     end_date: datetime | None
     liquidity: Decimal | None
     volume: Decimal | None
-    raw_payload: JsonObject
 
 
 class PolymarketMarketUpsertResult(BaseModel):
@@ -46,6 +46,116 @@ class PolymarketMarketSyncResult(BaseModel):
     fetched_count: int
     created_count: int
     updated_count: int
+
+
+class PolymarketMarketRawPayload(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    synced_at: datetime
+    market_external_id: str
+    condition_id: str
+    slug: str
+    payload_json: str
+
+
+class PolymarketMarketRawPayloadStorageService:
+    table_name = "polymarket_market_raw_payloads"
+    column_names = (
+        "synced_at",
+        "market_external_id",
+        "condition_id",
+        "slug",
+        "payload_json",
+    )
+
+    def __init__(self, client: ClickHouseClient | None = None) -> None:
+        self.client = client or ClickHouseClient()
+
+    def ensure_table(self) -> None:
+        self.client.command(
+            f"""
+            CREATE TABLE IF NOT EXISTS {self.table_name}
+            (
+                synced_at DateTime64(3, 'UTC'),
+                market_external_id String,
+                condition_id String,
+                slug String,
+                payload_json String
+            )
+            ENGINE = MergeTree()
+            PARTITION BY toYYYYMM(synced_at)
+            ORDER BY (market_external_id, synced_at)
+            """
+        )
+
+    def insert_payload(self, market: PolymarketGammaMarket) -> None:
+        row = PolymarketMarketRawPayload(
+            synced_at=timezone.now().astimezone(UTC),
+            market_external_id=market.external_id,
+            condition_id=self._get_str(market.payload, "conditionId"),
+            slug=self._get_str(market.payload, "slug"),
+            payload_json=json.dumps(market.payload, separators=(",", ":"), sort_keys=True),
+        )
+        self.client.insert(
+            self.table_name,
+            [
+                (
+                    row.synced_at,
+                    row.market_external_id,
+                    row.condition_id,
+                    row.slug,
+                    row.payload_json,
+                )
+            ],
+            self.column_names,
+        )
+
+    def list_payloads(
+        self,
+        *,
+        market_external_id: str | None = None,
+        limit: int = 100,
+    ) -> list[PolymarketMarketRawPayload]:
+        filters = ["1 = 1"]
+        parameters: dict[str, object] = {"limit": limit}
+        if market_external_id is not None:
+            filters.append("market_external_id = %(market_external_id)s")
+            parameters["market_external_id"] = market_external_id
+
+        rows = self.client.query(
+            f"""
+            SELECT synced_at, market_external_id, condition_id, slug, payload_json
+            FROM {self.table_name}
+            WHERE {' AND '.join(filters)}
+            ORDER BY synced_at DESC
+            LIMIT %(limit)s
+            """,
+            parameters=parameters,
+        )
+        payloads: list[PolymarketMarketRawPayload] = []
+        for row in rows:
+            synced_at, row_market_external_id, condition_id, slug, payload_json = row
+            if not isinstance(synced_at, datetime):
+                continue
+            payloads.append(
+                PolymarketMarketRawPayload(
+                    synced_at=self._normalize_synced_at(synced_at),
+                    market_external_id=str(row_market_external_id),
+                    condition_id=str(condition_id),
+                    slug=str(slug),
+                    payload_json=str(payload_json),
+                )
+            )
+        return payloads
+
+    def _get_str(self, payload: JsonObject, key: str) -> str:
+        value = payload.get(key)
+        return value if isinstance(value, str) else ""
+
+    def _normalize_synced_at(self, synced_at: datetime) -> datetime:
+        if timezone.is_naive(synced_at):
+            return timezone.make_aware(synced_at, UTC)
+        return synced_at.astimezone(UTC)
 
 
 class PolymarketMarketStorageService:
@@ -85,7 +195,6 @@ class PolymarketMarketStorageService:
             "volume_clob": self._get_decimal(payload, "volumeClob"),
             "volume_24hr": self._get_decimal(payload, "volume24hr", "volume24hrClob"),
             "clob_token_ids": self._get_json_list(payload, "clobTokenIds"),
-            "raw_payload": payload,
         }
 
     def _to_data(self, market: PolymarketMarket) -> PolymarketMarketData:
@@ -105,7 +214,6 @@ class PolymarketMarketStorageService:
             end_date=market.end_date,
             liquidity=market.liquidity,
             volume=market.volume,
-            raw_payload=market.raw_payload,
         )
 
     def _get_str(self, payload: JsonObject, key: str) -> str:
@@ -153,9 +261,11 @@ class PolymarketMarketSyncService:
         *,
         client: PolymarketGammaClient | None = None,
         storage: PolymarketMarketStorageService | None = None,
+        raw_payload_storage: PolymarketMarketRawPayloadStorageService | None = None,
     ) -> None:
         self.client = client or PolymarketGammaClient()
         self.storage = storage or PolymarketMarketStorageService()
+        self.raw_payload_storage = raw_payload_storage or PolymarketMarketRawPayloadStorageService()
 
     def sync_markets(
         self,
@@ -168,6 +278,7 @@ class PolymarketMarketSyncService:
         created_count = 0
         updated_count = 0
         fetched_count = 0
+        self.raw_payload_storage.ensure_table()
 
         for market in self._iter_markets(
             include_closed=include_closed,
@@ -175,6 +286,7 @@ class PolymarketMarketSyncService:
             page_size=page_size,
             max_markets=max_markets,
         ):
+            self.raw_payload_storage.insert_payload(market)
             result = self.storage.upsert_market(market)
             fetched_count += 1
             if result.created:

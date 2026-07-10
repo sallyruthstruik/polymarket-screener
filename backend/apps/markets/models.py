@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from django.db import models
 
-from apps.markets.types import JsonList, JsonObject
+from apps.markets.types import JsonList
 
 
 class PolymarketMarket(models.Model):
@@ -75,8 +75,6 @@ class PolymarketMarket(models.Model):
     sync_prices: models.BooleanField[bool, bool] = models.BooleanField(
         default=False, db_index=True
     )
-    raw_payload: models.JSONField[JsonObject, JsonObject] = models.JSONField()
-
     first_synced_at: models.DateTimeField[datetime, datetime] = models.DateTimeField(
         auto_now_add=True
     )
