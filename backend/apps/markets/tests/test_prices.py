@@ -47,7 +47,9 @@ def test_price_sync_service_uses_only_markets_enabled_for_price_sync() -> None:
         enabled_market.external_id,
     ]
     assert all(observation.side == "MID" for observation in storage.observations)
-    assert {observation.source for observation in storage.observations} == {"clob_prices_history_60m"}
+    assert {observation.source for observation in storage.observations} == {
+        "clob_prices_history_60m"
+    }
 
 
 @pytest.mark.django_db
@@ -110,7 +112,10 @@ def test_price_sync_service_uses_daily_backfill_for_older_history() -> None:
         "clob_prices_history_60m",
         "clob_prices_history_1440m",
     }
-    assert all(observation.market_external_id == old_market.external_id for observation in storage.observations)
+    assert all(
+        observation.market_external_id == old_market.external_id
+        for observation in storage.observations
+    )
 
 
 @pytest.mark.django_db
