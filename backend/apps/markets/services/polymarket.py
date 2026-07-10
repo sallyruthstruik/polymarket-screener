@@ -7,7 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 from pydantic import BaseModel, ConfigDict
 
-from apps.markets.client import PolymarketGammaClient, PolymarketGammaMarket
+from apps.markets.clients.polymarket import PolymarketGammaClient, PolymarketGammaMarket
 from apps.markets.models import PolymarketMarket
 from apps.markets.types import JsonList, JsonObject
 

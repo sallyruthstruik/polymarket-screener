@@ -6,7 +6,7 @@ from django.core.management import call_command
 from pytest import MonkeyPatch
 
 from apps.markets.management.commands import sync_polymarket_markets
-from apps.markets.services import PolymarketMarketSyncResult
+from apps.markets.services.polymarket import PolymarketMarketSyncResult
 
 
 class FakeSyncService:

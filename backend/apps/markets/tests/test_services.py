@@ -4,9 +4,12 @@ from decimal import Decimal
 
 import pytest
 
-from apps.markets.client import PolymarketGammaClient, PolymarketGammaMarket
+from apps.markets.clients.polymarket import PolymarketGammaClient, PolymarketGammaMarket
 from apps.markets.models import PolymarketMarket
-from apps.markets.services import PolymarketMarketStorageService, PolymarketMarketSyncService
+from apps.markets.services.polymarket import (
+    PolymarketMarketStorageService,
+    PolymarketMarketSyncService,
+)
 from apps.markets.types import JsonObject
 
 

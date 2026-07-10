@@ -4,7 +4,7 @@ from typing import cast
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.utils import timezone
 
-from apps.markets.services import PolymarketMarketSyncService
+from apps.markets.services.polymarket import PolymarketMarketSyncService
 
 
 class Command(BaseCommand):
