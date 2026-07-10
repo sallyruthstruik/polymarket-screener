@@ -2,9 +2,9 @@ from datetime import datetime
 from io import StringIO
 from typing import ClassVar
 
+import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
-import pytest
 from pytest import MonkeyPatch
 
 from apps.markets.management.commands import (
