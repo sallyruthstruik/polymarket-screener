@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 from django.contrib.admin.sites import AdminSite
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.http import HttpRequest
@@ -9,8 +11,9 @@ from apps.markets.models import PolymarketMarket
 
 def _build_request() -> HttpRequest:
     request = RequestFactory().post("/admin/")
-    setattr(request, "session", {})
-    setattr(request, "_messages", FallbackStorage(request))
+    request_any = cast(Any, request)
+    request_any.session = {}
+    request_any._messages = FallbackStorage(request)
     return request
 
 

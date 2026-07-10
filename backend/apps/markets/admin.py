@@ -1,8 +1,8 @@
 from typing import TYPE_CHECKING
 
 from django.contrib import admin
-from django.http import HttpRequest
 from django.db.models import QuerySet
+from django.http import HttpRequest
 
 from apps.markets.models import PolymarketMarket
 

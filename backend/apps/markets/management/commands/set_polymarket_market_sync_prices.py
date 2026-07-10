@@ -38,8 +38,10 @@ class Command(BaseCommand):
             msg = "Pass at least one external id or use --all"
             raise CommandError(msg)
 
-        queryset = PolymarketMarket.objects.all() if update_all else PolymarketMarket.objects.filter(
-            external_id__in=external_ids
+        queryset = (
+            PolymarketMarket.objects.all()
+            if update_all
+            else PolymarketMarket.objects.filter(external_id__in=external_ids)
         )
         updated_count = queryset.update(sync_prices=enabled)
         output = (
