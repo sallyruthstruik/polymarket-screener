@@ -210,7 +210,10 @@ class PolymarketPriceSyncService:
         for market in markets:
             for token_id in self._get_token_ids(market):
                 requests[(token_id, "BUY")] = PolymarketPriceRequest(token_id=token_id, side="BUY")
-                requests[(token_id, "SELL")] = PolymarketPriceRequest(token_id=token_id, side="SELL")
+                requests[(token_id, "SELL")] = PolymarketPriceRequest(
+                    token_id=token_id,
+                    side="SELL",
+                )
         return requests
 
     def _build_observations(

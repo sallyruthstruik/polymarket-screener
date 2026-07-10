@@ -5,8 +5,7 @@ from typing import ClassVar
 from django.core.management import call_command
 from pytest import MonkeyPatch
 
-from apps.markets.management.commands import sync_polymarket_markets
-from apps.markets.management.commands import sync_polymarket_prices
+from apps.markets.management.commands import sync_polymarket_markets, sync_polymarket_prices
 from apps.markets.services.polymarket import PolymarketMarketSyncResult
 from apps.markets.services.prices import PolymarketPriceSyncResult
 

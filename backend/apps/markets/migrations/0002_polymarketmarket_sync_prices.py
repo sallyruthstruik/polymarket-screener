@@ -14,6 +14,9 @@ class Migration(migrations.Migration):
         ),
         migrations.AddIndex(
             model_name="polymarketmarket",
-            index=models.Index(fields=["sync_prices", "closed"], name="markets_pol_sync_pr_5cc962_idx"),
+            index=models.Index(
+                fields=["sync_prices", "closed"],
+                name="markets_pol_sync_pr_5cc962_idx",
+            ),
         ),
     ]
