@@ -24,7 +24,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--fidelity-minutes",
             type=int,
-            default=1,
+            default=60,
             help="Price history fidelity in minutes.",
         )
         parser.add_argument(

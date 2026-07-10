@@ -31,7 +31,7 @@ def test_price_sync_service_uses_only_markets_enabled_for_price_sync() -> None:
         storage=storage,
     ).sync_prices(
         batch_size=10,
-        fidelity_minutes=1,
+        fidelity_minutes=60,
         chunk_size_minutes=60 * 24,
     )
 
@@ -66,12 +66,12 @@ def test_price_sync_service_resumes_from_latest_history_timestamp() -> None:
         storage=storage,
     ).sync_prices(
         batch_size=10,
-        fidelity_minutes=1,
+        fidelity_minutes=60,
         chunk_size_minutes=60 * 24,
     )
 
     assert len(clob_client.history_requests) == 2
-    expected_start_timestamp = latest_timestamp + timedelta(minutes=1)
+    expected_start_timestamp = latest_timestamp + timedelta(minutes=60)
     assert all(
         request["start_timestamp"] == expected_start_timestamp
         for request in clob_client.history_requests

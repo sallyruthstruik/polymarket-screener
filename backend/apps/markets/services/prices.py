@@ -249,7 +249,7 @@ class PolymarketPriceSyncService:
         *,
         batch_size: int = 500,
         max_markets: int | None = None,
-        fidelity_minutes: int = 1,
+        fidelity_minutes: int = 60,
         chunk_size_minutes: int = 60 * 24,
     ) -> PolymarketPriceSyncResult:
         self.storage.ensure_table()
