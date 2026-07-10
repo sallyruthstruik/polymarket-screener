@@ -72,6 +72,9 @@ def test_prices_view_returns_observations(monkeypatch: Any) -> None:
     admin_instance = PolymarketMarketAdmin(PolymarketMarket, AdminSite())
 
     class FakePriceStorageService(PolymarketPriceStorageService):
+        def __init__(self) -> None:
+            return None
+
         def list_observations(
             self,
             *,
