@@ -11,15 +11,14 @@ docker compose up --build
 
 Services:
 
-- Frontend: `docker compose port frontend 5173`
-- Backend: `docker compose port backend 8000`
-- Postgres: `docker compose port db 5432`
-- ClickHouse: `docker compose port clickhouse 8123`
+- Backend: http://localhost:8000
+- Frontend: http://localhost:5173
+- Postgres: localhost:5433
+- ClickHouse: localhost:8123
 
-All host ports default to `0`, so Docker picks a free external port for each
-service. Set `POSTGRES_HOST_PORT`, `CLICKHOUSE_HOST_PORT`,
-`BACKEND_HOST_PORT`, or `FRONTEND_HOST_PORT` in `.env` if you need fixed host
-ports locally.
+To avoid local port conflicts, override `POSTGRES_HOST_PORT`,
+`CLICKHOUSE_HOST_PORT`, `BACKEND_HOST_PORT`, `FRONTEND_HOST_PORT`, and
+optionally `VITE_API_BASE_URL` in `.env`.
 
 ## Backend Checks
 
