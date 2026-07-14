@@ -1,10 +1,11 @@
+import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from io import StringIO
 
 import pytest
 from django.utils import timezone
-from pytest import CaptureFixture
 
 from apps.markets.clients.polymarket import PolymarketClobPriceClient, PolymarketPriceHistoryPoint
 from apps.markets.models import PolymarketMarket
@@ -157,22 +158,33 @@ def test_price_sync_service_can_force_single_resolution(
 
 
 @pytest.mark.django_db
-def test_price_sync_service_logs_branches(capsys: CaptureFixture[str]) -> None:
+def test_price_sync_service_logs_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frozen_now = datetime(2026, 7, 11, 11, 0, tzinfo=UTC)
+    monkeypatch.setattr(timezone, "now", lambda: frozen_now)
+    log_stream = StringIO()
+    log_handler = logging.StreamHandler(log_stream)
+    prices_logger = logging.getLogger("apps.markets.services.prices")
+    prices_logger.addHandler(log_handler)
     _create_market(
         external_id="1",
         sync_prices=True,
         market_created_at=datetime(2026, 7, 10, 11, 0, tzinfo=UTC),
     )
 
-    result = PolymarketPriceSyncService(
-        clob_client=FakeClobPriceClient(),
-        storage=FakePriceStorageService(),
-    ).sync_prices(
-        batch_size=10,
-        fidelity_minutes=60,
-        chunk_size_minutes=60 * 24,
-    )
-    output = capsys.readouterr().err
+    try:
+        result = PolymarketPriceSyncService(
+            clob_client=FakeClobPriceClient(),
+            storage=FakePriceStorageService(),
+        ).sync_prices(
+            batch_size=10,
+            fidelity_minutes=60,
+            chunk_size_minutes=60 * 24,
+        )
+        output = log_stream.getvalue()
+    finally:
+        prices_logger.removeHandler(log_handler)
 
     assert result.market_count == 1
     assert "Starting price sync batch_size=10" in output
@@ -213,6 +225,7 @@ def test_clob_price_client_parses_price_history_response() -> None:
 
 def test_price_storage_creates_table_inserts_rows_and_reads_latest_history_timestamp() -> None:
     clickhouse_client = FakeClickHouseClient()
+    clickhouse_client.query_rows = [[datetime(2026, 7, 10, 12, 0, tzinfo=UTC)]]
     storage = PolymarketPriceStorageService(client=clickhouse_client)
     observed_at = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
 
@@ -250,6 +263,17 @@ def test_price_storage_creates_table_inserts_rows_and_reads_latest_history_times
         )
     ]
     assert latest_timestamp == observed_at
+
+
+def test_price_storage_returns_no_latest_history_timestamp_when_rows_are_empty() -> None:
+    storage = PolymarketPriceStorageService(client=FakeClickHouseClient())
+
+    latest_timestamp = storage.get_latest_history_timestamp(
+        token_id="token-1",
+        source="clob_prices_history_60m",
+    )
+
+    assert latest_timestamp is None
 
 
 def test_price_storage_lists_rows() -> None:
@@ -370,8 +394,6 @@ class FakeClickHouseClient(ClickHouseClient):
     ) -> Sequence[Sequence[object]]:
         self.query_sql = query
         self.query_parameters = parameters
-        if parameters is not None and "source" in parameters:
-            return [[datetime(2026, 7, 10, 12, 0, tzinfo=UTC)]]
         return self.query_rows
 
 

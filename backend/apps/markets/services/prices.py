@@ -112,11 +112,13 @@ class PolymarketPriceStorageService:
         logger.info("Loading latest history timestamp token_id=%s source=%s", token_id, source)
         rows = self.client.query(
             f"""
-            SELECT max(observed_at)
+            SELECT observed_at
             FROM {self.table_name}
             WHERE token_id = %(token_id)s
               AND side = %(side)s
               AND source = %(source)s
+            ORDER BY observed_at DESC
+            LIMIT 1
             """,
             parameters={
                 "token_id": token_id,
