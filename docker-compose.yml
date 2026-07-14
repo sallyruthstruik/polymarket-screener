@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-polymarket_screener}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-polymarket_screener}
     ports:
-      - "${POSTGRES_HOST_PORT:-5433}:5432"
+      - "${POSTGRES_HOST_PORT:-0}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +22,7 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-polymarket_screener}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-polymarket_screener}
     ports:
-      - "${CLICKHOUSE_HOST_PORT:-8123}:8123"
+      - "${CLICKHOUSE_HOST_PORT:-0}:8123"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
     healthcheck:
@@ -50,7 +50,7 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-polymarket_screener}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-polymarket_screener}
     ports:
-      - "8000:8000"
+      - "${BACKEND_HOST_PORT:-0}:8000"
     volumes:
       - ./backend:/app
     depends_on:
@@ -64,9 +64,9 @@ services:
       context: ./frontend
     command: npm run dev -- --host 0.0.0.0
     environment:
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
     ports:
-      - "5173:5173"
+      - "${FRONTEND_HOST_PORT:-0}:5173"
     volumes:
       - ./frontend:/app
       - frontend_node_modules:/app/node_modules
