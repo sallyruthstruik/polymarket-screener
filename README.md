@@ -14,6 +14,11 @@ Services:
 - Backend: http://localhost:8000
 - Frontend: http://localhost:5173
 - Postgres: localhost:5433
+- ClickHouse: localhost:8123
+
+To avoid local port conflicts, override `POSTGRES_HOST_PORT`,
+`CLICKHOUSE_HOST_PORT`, `BACKEND_HOST_PORT`, `FRONTEND_HOST_PORT`, and
+optionally `VITE_API_BASE_URL` in `.env`.
 
 ## Backend Checks
 
