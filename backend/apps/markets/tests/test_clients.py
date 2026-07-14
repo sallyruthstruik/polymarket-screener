@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from io import StringIO
 from urllib.request import Request
 
@@ -66,7 +67,7 @@ def test_clob_client_logs_history_branching() -> None:
                     {"t": 1_783_680_000, "p": ""},
                 ]
             },
-            end_timestamp=polymarket.datetime(2026, 7, 10, 12, 2, tzinfo=polymarket.UTC),
+            end_timestamp=datetime(2026, 7, 10, 12, 2, tzinfo=UTC),
         )
     finally:
         polymarket.logger.removeHandler(handler)

@@ -1,3 +1,4 @@
+import importlib
 from collections.abc import Sequence
 from typing import Any, cast
 
@@ -32,8 +33,6 @@ class ClickHouseSettings(BaseModel):
 
 class ClickHouseClient:
     def __init__(self, clickhouse_settings: ClickHouseSettings | None = None) -> None:
-        import clickhouse_connect  # type: ignore[import-not-found]
-
         resolved_settings = clickhouse_settings or ClickHouseSettings.from_django_settings()
         logger.info(
             "Initializing ClickHouse client host=%s port=%s database=%s username=%s",
@@ -42,6 +41,7 @@ class ClickHouseClient:
             resolved_settings.database,
             resolved_settings.username,
         )
+        clickhouse_connect = importlib.import_module("clickhouse_connect")
         self._client: Any = clickhouse_connect.get_client(
             host=resolved_settings.host,
             port=resolved_settings.port,
