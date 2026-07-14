@@ -53,8 +53,7 @@ def test_gamma_client_logs_request_and_response_preview(
     assert "Stopping Gamma market iteration because page returned no markets" in output
 
 
-def test_clob_client_logs_history_branching(
-) -> None:
+def test_clob_client_logs_history_branching() -> None:
     client = PolymarketClobPriceClient()
     handler = BufferingHandler()
     polymarket.logger.addHandler(handler)

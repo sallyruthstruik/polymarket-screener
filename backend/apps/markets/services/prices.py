@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -7,8 +10,8 @@ from pydantic import BaseModel, ConfigDict
 
 from apps.core.logging import get_logger, should_log_progress
 from apps.markets.clients.polymarket import PolymarketClobPriceClient, PolymarketPriceHistoryPoint
-from apps.markets.models import PolymarketMarket
-from apps.markets.services.clickhouse import ClickHouseClient
+from apps.markets.services.clickhouse import ClickHouseClient, sql_in_strings
+from apps.markets.services.polymarket import PolymarketMarketData, PolymarketMarketStorageService
 
 logger = get_logger("apps.markets.services.prices")
 
@@ -25,16 +28,8 @@ class PolymarketPriceObservation(BaseModel):
     source: str
 
 
-class PolymarketPriceInspectionRow(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    observed_at: datetime
-    market_external_id: str
-    condition_id: str
-    token_id: str
-    side: str
-    price: Decimal
-    source: str
+class PolymarketPriceInspectionRow(PolymarketPriceObservation):
+    pass
 
 
 class PolymarketPriceSyncResult(BaseModel):
@@ -50,6 +45,21 @@ class PolymarketPriceResolution(BaseModel):
 
     fidelity_minutes: int
     lookback: timedelta | None
+
+
+class PolymarketPriceChartSeries(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    token_id: str
+    observations: list[PolymarketPriceInspectionRow]
+
+
+class PolymarketPriceChart(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    selected_range: str
+    resolved_source: str | None
+    series: list[PolymarketPriceChartSeries]
 
 
 class PolymarketPriceStorageService:
@@ -92,18 +102,7 @@ class PolymarketPriceStorageService:
         if not observations:
             logger.info("Skipping price insert because observation list is empty")
             return 0
-        rows: list[tuple[object, ...]] = [
-            (
-                observation.observed_at,
-                observation.market_external_id,
-                observation.condition_id,
-                observation.token_id,
-                observation.side,
-                observation.price,
-                observation.source,
-            )
-            for observation in observations
-        ]
+        rows = [self._observation_to_row(observation) for observation in observations]
         self.client.insert(self.table_name, rows, self.column_names)
         logger.info("Inserted price observations count=%s", len(rows))
         return len(rows)
@@ -144,20 +143,7 @@ class PolymarketPriceStorageService:
                 raw_timestamp,
             )
             return None
-        if timezone.is_naive(raw_timestamp):
-            logger.info(
-                "Latest history timestamp was naive token_id=%s source=%s",
-                token_id,
-                source,
-            )
-            return timezone.make_aware(raw_timestamp, UTC)
-        logger.info(
-            "Loaded latest history timestamp token_id=%s source=%s timestamp=%s",
-            token_id,
-            source,
-            raw_timestamp.astimezone(UTC).isoformat(),
-        )
-        return raw_timestamp.astimezone(UTC)
+        return self._normalize_observed_at(raw_timestamp)
 
     def list_observations(
         self,
@@ -182,7 +168,6 @@ class PolymarketPriceStorageService:
             logger.info("Applying observation filter token_id=%s", token_id)
             filters.append("token_id = %(token_id)s")
             parameters["token_id"] = token_id
-
         rows = self.client.query(
             f"""
             SELECT observed_at, market_external_id, condition_id, token_id, side, price, source
@@ -193,7 +178,78 @@ class PolymarketPriceStorageService:
             """,
             parameters=parameters,
         )
+        return self._rows_to_observations(rows)
 
+    def build_price_chart(
+        self,
+        *,
+        market_external_id: str,
+        token_ids: Sequence[str],
+        range_key: str,
+    ) -> PolymarketPriceChart:
+        source_preferences = self._get_chart_source_preferences(range_key)
+        start_at = self._get_chart_start(range_key)
+        if not token_ids:
+            logger.info("Building empty price chart because token id list is empty")
+            return PolymarketPriceChart(selected_range=range_key, resolved_source=None, series=[])
+        for source in source_preferences:
+            rows = self._list_chart_rows(
+                market_external_id=market_external_id,
+                token_ids=token_ids,
+                source=source,
+                start_at=start_at,
+            )
+            if rows:
+                logger.info(
+                    "Built price chart with preferred source range=%s source=%s row_count=%s",
+                    range_key,
+                    source,
+                    len(rows),
+                )
+                return PolymarketPriceChart(
+                    selected_range=range_key,
+                    resolved_source=source,
+                    series=self._group_chart_rows(rows),
+                )
+            logger.info(
+                "Chart source produced no rows range=%s source=%s market_external_id=%s",
+                range_key,
+                source,
+                market_external_id,
+            )
+        return PolymarketPriceChart(selected_range=range_key, resolved_source=None, series=[])
+
+    def _list_chart_rows(
+        self,
+        *,
+        market_external_id: str,
+        token_ids: Sequence[str],
+        source: str,
+        start_at: datetime | None,
+    ) -> list[PolymarketPriceInspectionRow]:
+        filters = [
+            f"market_external_id = '{market_external_id}'",
+            f"token_id IN {sql_in_strings(token_ids)}",
+            f"side = '{self.history_side}'",
+            f"source = '{source}'",
+        ]
+        if start_at is not None:
+            logger.info("Applying chart range lower bound source=%s start_at=%s", source, start_at)
+            filters.append(f"observed_at >= toDateTime64('{start_at.isoformat()}', 3, 'UTC')")
+        rows = self.client.query(
+            f"""
+            SELECT observed_at, market_external_id, condition_id, token_id, side, price, source
+            FROM {self.table_name}
+            WHERE {' AND '.join(filters)}
+            ORDER BY observed_at ASC, token_id ASC
+            """
+        )
+        return self._rows_to_observations(rows)
+
+    def _rows_to_observations(
+        self,
+        rows: Sequence[Sequence[object]],
+    ) -> list[PolymarketPriceInspectionRow]:
         observations: list[PolymarketPriceInspectionRow] = []
         for index, row in enumerate(rows, start=1):
             observed_at, market_id, condition_id, row_token_id, side, price, source = row
@@ -217,20 +273,58 @@ class PolymarketPriceStorageService:
             )
             if should_log_progress(index, every=100):
                 logger.info(
-                    "Collected observation rows progress processed=%s emitted=%s last_token_id=%s",
+                    "Collected observation rows progress processed=%s emitted=%s",
                     index,
                     len(observations),
-                    row_token_id,
                 )
         logger.info("Finished listing observations count=%s", len(observations))
         return observations
 
+    def _group_chart_rows(
+        self,
+        rows: Sequence[PolymarketPriceInspectionRow],
+    ) -> list[PolymarketPriceChartSeries]:
+        grouped: dict[str, list[PolymarketPriceInspectionRow]] = defaultdict(list)
+        for row in rows:
+            grouped[row.token_id].append(row)
+        return [
+            PolymarketPriceChartSeries(token_id=token_id, observations=observations)
+            for token_id, observations in grouped.items()
+        ]
+
+    def _get_chart_source_preferences(self, range_key: str) -> tuple[str, ...]:
+        if range_key == "all":
+            logger.info("Using daily-first source preference for all-time chart")
+            return ("clob_prices_history_1440m", "clob_prices_history_60m")
+        logger.info("Using hourly-first source preference for bounded chart range=%s", range_key)
+        return ("clob_prices_history_60m", "clob_prices_history_1440m")
+
+    def _get_chart_start(self, range_key: str) -> datetime | None:
+        now = timezone.now().astimezone(UTC)
+        if range_key == "24h":
+            return now - timedelta(hours=24)
+        if range_key == "7d":
+            return now - timedelta(days=7)
+        if range_key == "30d":
+            return now - timedelta(days=30)
+        logger.info("Using full chart history because range is unbounded range=%s", range_key)
+        return None
+
+    def _observation_to_row(self, observation: PolymarketPriceObservation) -> tuple[object, ...]:
+        return (
+            observation.observed_at,
+            observation.market_external_id,
+            observation.condition_id,
+            observation.token_id,
+            observation.side,
+            observation.price,
+            observation.source,
+        )
+
     def _parse_price_decimal(self, value: object) -> Decimal | None:
         if isinstance(value, Decimal):
-            logger.info("Price decimal already Decimal value=%s", value)
             return value
         if isinstance(value, int | float | str):
-            logger.info("Parsing price decimal value=%s", value)
             return Decimal(str(value))
         logger.info("Price decimal rejected unsupported value=%s", value)
         return None
@@ -241,16 +335,11 @@ class PolymarketPriceStorageService:
             return timezone.make_aware(observed_at, UTC)
         return observed_at.astimezone(UTC)
 
+
 class PolymarketPriceSyncService:
     default_resolutions = (
-        PolymarketPriceResolution(
-            fidelity_minutes=60,
-            lookback=timedelta(days=30),
-        ),
-        PolymarketPriceResolution(
-            fidelity_minutes=60 * 24,
-            lookback=None,
-        ),
+        PolymarketPriceResolution(fidelity_minutes=60, lookback=timedelta(days=30)),
+        PolymarketPriceResolution(fidelity_minutes=60 * 24, lookback=None),
     )
 
     def __init__(
@@ -258,9 +347,11 @@ class PolymarketPriceSyncService:
         *,
         clob_client: PolymarketClobPriceClient | None = None,
         storage: PolymarketPriceStorageService | None = None,
+        market_storage: PolymarketMarketStorageService | None = None,
     ) -> None:
         self.clob_client = clob_client or PolymarketClobPriceClient()
         self.storage = storage or PolymarketPriceStorageService()
+        self.market_storage = market_storage or PolymarketMarketStorageService()
 
     def sync_prices(
         self,
@@ -328,7 +419,7 @@ class PolymarketPriceSyncService:
     def _sync_token_history(
         self,
         *,
-        market: PolymarketMarket,
+        market: PolymarketMarketData,
         token_id: str,
         resolution: PolymarketPriceResolution,
         chunk_size_minutes: int,
@@ -379,9 +470,9 @@ class PolymarketPriceSyncService:
             inserted_count += self.storage.insert_observations(observations)
             if should_log_progress(chunk_index, every=10):
                 logger.info(
-                    "Synced token history progress market_external_id=%s token_id=%s "
-                    "fidelity_minutes=%s chunk_index=%s inserted_count=%s "
-                    "current_start=%s current_end=%s",
+                    "Synced token history progress "
+                    "market_external_id=%s token_id=%s fidelity_minutes=%s "
+                    "chunk_index=%s inserted_count=%s current_start=%s current_end=%s",
                     market.external_id,
                     token_id,
                     resolution.fidelity_minutes,
@@ -393,8 +484,8 @@ class PolymarketPriceSyncService:
             current_start = current_end + timedelta(minutes=resolution.fidelity_minutes)
 
         logger.info(
-            "Finished token history sync market_external_id=%s token_id=%s "
-            "fidelity_minutes=%s inserted_count=%s",
+            "Finished token history sync "
+            "market_external_id=%s token_id=%s fidelity_minutes=%s inserted_count=%s",
             market.external_id,
             token_id,
             resolution.fidelity_minutes,
@@ -407,53 +498,63 @@ class PolymarketPriceSyncService:
         *,
         batch_size: int,
         max_markets: int | None,
-    ) -> Iterable[list[PolymarketMarket]]:
-        markets = PolymarketMarket.objects.filter(sync_prices=True).order_by("external_id")
-        if max_markets is not None:
-            logger.info("Applying max markets limit to price sync max_markets=%s", max_markets)
-            markets = markets[:max_markets]
-
-        batch: list[PolymarketMarket] = []
-        request_count = 0
-        for index, market in enumerate(markets, start=1):
-            token_count = len(self._get_token_ids(market))
-            if token_count == 0:
-                logger.info("Skipping market with no token ids external_id=%s", market.external_id)
-                continue
-            if batch and request_count + token_count > batch_size:
+    ) -> Iterable[list[PolymarketMarketData]]:
+        offset = 0
+        processed_markets = 0
+        while True:
+            batch = self.market_storage.list_price_sync_markets(limit=500, offset=offset)
+            if not batch:
+                logger.info("Stopping market batch iteration because batch is empty")
+                return
+            current_batch: list[PolymarketMarketData] = []
+            request_count = 0
+            for market in batch:
+                if max_markets is not None and processed_markets >= max_markets:
+                    logger.info("Stopping market batch iteration because max_markets was reached")
+                    if current_batch:
+                        yield current_batch
+                    return
+                token_count = len(self._get_token_ids(market))
+                if token_count == 0:
+                    logger.info(
+                        "Skipping market with no token ids external_id=%s", market.external_id
+                    )
+                    continue
+                if current_batch and request_count + token_count > batch_size:
+                    logger.info(
+                        "Yielding market batch because batch_size would be exceeded "
+                        "current_batch_size=%s request_count=%s next_token_count=%s",
+                        len(current_batch),
+                        request_count,
+                        token_count,
+                    )
+                    yield current_batch
+                    current_batch = []
+                    request_count = 0
+                current_batch.append(market)
+                processed_markets += 1
+                request_count += token_count
+                if should_log_progress(processed_markets, every=100):
+                    logger.info(
+                        "Built market batch progress "
+                        "processed_markets=%s current_batch_size=%s request_count=%s",
+                        processed_markets,
+                        len(current_batch),
+                        request_count,
+                    )
+            if current_batch:
                 logger.info(
-                    "Yielding market batch because batch_size would be exceeded "
-                    "current_batch_size=%s request_count=%s next_token_count=%s",
-                    len(batch),
-                    request_count,
-                    token_count,
-                )
-                yield batch
-                batch = []
-                request_count = 0
-            batch.append(market)
-            request_count += token_count
-            if should_log_progress(index, every=100):
-                logger.info(
-                    "Built market batch progress "
-                    "processed_markets=%s current_batch_size=%s request_count=%s",
-                    index,
-                    len(batch),
+                    "Yielding market batch size=%s request_count=%s",
+                    len(current_batch),
                     request_count,
                 )
-
-        if batch:
-            logger.info(
-                "Yielding final market batch size=%s request_count=%s",
-                len(batch),
-                request_count,
-            )
-            yield batch
+                yield current_batch
+            offset += len(batch)
 
     def _build_history_observations(
         self,
         *,
-        market: PolymarketMarket,
+        market: PolymarketMarketData,
         token_id: str,
         history: Sequence[PolymarketPriceHistoryPoint],
         resolution: PolymarketPriceResolution,
@@ -474,7 +575,7 @@ class PolymarketPriceSyncService:
     def _get_history_start_timestamp(
         self,
         *,
-        market: PolymarketMarket,
+        market: PolymarketMarketData,
         token_id: str,
         resolution: PolymarketPriceResolution,
     ) -> datetime:
@@ -497,8 +598,7 @@ class PolymarketPriceSyncService:
         market_timestamp = market.market_created_at or market.start_date or timezone.now()
         if market.market_created_at is not None:
             logger.info(
-                "Using market_created_at as history start external_id=%s",
-                market.external_id,
+                "Using market_created_at as history start external_id=%s", market.external_id
             )
         elif market.start_date is not None:
             logger.info("Using start_date as history start external_id=%s", market.external_id)
@@ -515,16 +615,13 @@ class PolymarketPriceSyncService:
             )
             return normalized_market_timestamp
         logger.info(
-            "Using max of market timestamp and resolution start external_id=%s "
-            "market_timestamp=%s resolution_start=%s",
+            "Using max of market timestamp and resolution start "
+            "external_id=%s market_timestamp=%s resolution_start=%s",
             market.external_id,
             normalized_market_timestamp.isoformat(),
             resolution_start.isoformat(),
         )
-        return max(
-            normalized_market_timestamp,
-            resolution_start,
-        )
+        return max(normalized_market_timestamp, resolution_start)
 
     def _get_history_end_timestamp(
         self,
@@ -532,38 +629,34 @@ class PolymarketPriceSyncService:
         resolution: PolymarketPriceResolution,
         single_resolution_mode: bool,
     ) -> datetime:
-        now = timezone.now().astimezone(UTC)
+        end_timestamp = timezone.now().astimezone(UTC)
         if single_resolution_mode:
             logger.info(
-                "Using current time as history end because single resolution mode is enabled"
+                "Using current time as history end because single resolution mode is enabled "
+                "fidelity_minutes=%s",
+                resolution.fidelity_minutes,
             )
-            return now
-        if resolution.lookback is None and self.default_resolutions:
-            previous_resolution = self.default_resolutions[0]
-            previous_resolution_start = self._get_resolution_start_timestamp(
-                resolution=previous_resolution
-            )
-            if previous_resolution_start is None:
-                logger.info(
-                    "Using current time as history end because previous resolution start is missing"
-                )
-                return now
+            return end_timestamp
+        if resolution.lookback is None:
             logger.info(
-                "Using previous resolution boundary as history end previous_resolution_start=%s",
-                previous_resolution_start.isoformat(),
+                "Using current time as history end because resolution lookback is unlimited "
+                "fidelity_minutes=%s",
+                resolution.fidelity_minutes,
             )
-            return previous_resolution_start - timedelta(minutes=1)
-        logger.info("Using current time as history end because resolution has bounded lookback")
-        return now
+            return end_timestamp - timedelta(minutes=resolution.fidelity_minutes)
+        logger.info(
+            "Using current time as history end fidelity_minutes=%s end_timestamp=%s",
+            resolution.fidelity_minutes,
+            end_timestamp.isoformat(),
+        )
+        return end_timestamp
 
     def _get_resolution_start_timestamp(
-        self,
-        *,
-        resolution: PolymarketPriceResolution,
+        self, *, resolution: PolymarketPriceResolution
     ) -> datetime | None:
         if resolution.lookback is None:
             logger.info(
-                "Resolution start timestamp absent because lookback is None fidelity_minutes=%s",
+                "Resolution has no lookback fidelity_minutes=%s",
                 resolution.fidelity_minutes,
             )
             return None
@@ -575,32 +668,27 @@ class PolymarketPriceSyncService:
         )
         return start_timestamp
 
+    def _get_token_ids(self, market: PolymarketMarketData) -> list[str]:
+        token_ids = [token_id for token_id in market.clob_token_ids if token_id != ""]
+        logger.info(
+            "Extracted token ids external_id=%s token_count=%s", market.external_id, len(token_ids)
+        )
+        return token_ids
+
     def _get_resolutions(
-        self,
-        fidelity_minutes: int | None,
+        self, fidelity_minutes: int | None
     ) -> tuple[PolymarketPriceResolution, ...]:
         if fidelity_minutes is not None:
             logger.info("Using single price resolution fidelity_minutes=%s", fidelity_minutes)
             return (PolymarketPriceResolution(fidelity_minutes=fidelity_minutes, lookback=None),)
-        logger.info("Using default mixed price resolutions count=%s", len(self.default_resolutions))
+        logger.info("Using default mixed price resolutions")
         return self.default_resolutions
 
     def _get_history_source(self, fidelity_minutes: int) -> str:
         return f"clob_prices_history_{fidelity_minutes}m"
 
-    def _get_token_ids(self, market: PolymarketMarket) -> list[str]:
-        token_ids = [
-            str(value) for value in market.clob_token_ids if isinstance(value, str) and value
-        ]
-        if token_ids:
-            logger.info(
-                "Extracted token ids external_id=%s token_count=%s",
-                market.external_id,
-                len(token_ids),
-            )
-        else:
-            logger.info("No valid token ids found external_id=%s", market.external_id)
-        return token_ids
-
     def _normalize_observed_at(self, observed_at: datetime) -> datetime:
-        return self.storage._normalize_observed_at(observed_at)
+        if timezone.is_naive(observed_at):
+            logger.info("Observed timestamp was naive value=%s", observed_at.isoformat())
+            return timezone.make_aware(observed_at, UTC)
+        return observed_at.astimezone(UTC)

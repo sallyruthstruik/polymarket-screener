@@ -1,0 +1,73 @@
+{% extends "admin/base_site.html" %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Home</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+    &rsaquo; <a href="{% url 'admin:markets_polymarketmarket_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+    &rsaquo; {{ market.external_id }}
+  </div>
+{% endblock %}
+
+{% block content %}
+  <div id="content-main">
+    <div style="display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap;">
+      {% if polymarket_url %}
+        <a href="{{ polymarket_url }}" target="_blank" rel="noopener noreferrer">Open market</a>
+      {% endif %}
+      <a href="{{ prices_url }}">Inspect prices</a>
+      <a href="{{ raw_payloads_url }}">Inspect raw payloads</a>
+    </div>
+
+    <div style="margin-bottom: 1.5rem;">
+      <strong>Read only:</strong>
+      external_id={{ market.external_id }},
+      first_synced_at={{ market.first_synced_at }},
+      last_synced_at={{ market.last_synced_at }},
+      written_at={{ market.written_at }},
+      row_version={{ market.row_version }},
+      write_source={{ market.write_source }}
+    </div>
+
+    <div style="margin-bottom: 1.5rem;">
+      {% for range_name in chart_ranges %}
+        {% if range_name == selected_range %}
+          <strong>{{ range_name }}</strong>
+        {% else %}
+          <a href="?range={{ range_name }}">{{ range_name }}</a>
+        {% endif %}
+        {% if not forloop.last %}|{% endif %}
+      {% endfor %}
+    </div>
+
+    <div style="margin-bottom: 1.5rem;">
+      <img src="{{ chart_url }}" alt="Price chart" style="max-width: 100%; border: 1px solid #d1d5db;">
+    </div>
+
+    <form method="post">
+      {% csrf_token %}
+      {% if form.non_field_errors %}
+        <div class="errornote">
+          {{ form.non_field_errors }}
+        </div>
+      {% endif %}
+
+      <fieldset class="module aligned">
+        {% for field in form %}
+          <div class="form-row">
+            {{ field.errors }}
+            {{ field.label_tag }}
+            {{ field }}
+            {% if field.help_text %}
+              <div class="help">{{ field.help_text }}</div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </fieldset>
+
+      <div class="submit-row">
+        <input type="submit" value="Save" class="default">
+      </div>
+    </form>
+  </div>
+{% endblock %}

@@ -1,7 +1,6 @@
 from collections.abc import Sequence
 from typing import Any, cast
 
-import clickhouse_connect
 from django.conf import settings
 from pydantic import BaseModel, ConfigDict
 
@@ -33,6 +32,8 @@ class ClickHouseSettings(BaseModel):
 
 class ClickHouseClient:
     def __init__(self, clickhouse_settings: ClickHouseSettings | None = None) -> None:
+        import clickhouse_connect  # type: ignore[import-not-found]
+
         resolved_settings = clickhouse_settings or ClickHouseSettings.from_django_settings()
         logger.info(
             "Initializing ClickHouse client host=%s port=%s database=%s username=%s",
@@ -78,3 +79,14 @@ class ClickHouseClient:
         )
         result: Any = self._client.query(query, parameters=parameters)
         return cast(Sequence[Sequence[object]], result.result_rows)
+
+
+def sql_quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
+
+
+def sql_in_strings(values: Sequence[str]) -> str:
+    if not values:
+        return "('')"
+    return f"({', '.join(sql_quote(value) for value in values)})"
