@@ -1,9 +1,9 @@
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
-from django.utils import timezone
 
 from apps.markets.clients.polymarket import PolymarketClobPriceClient, PolymarketPriceHistoryPoint
 from apps.markets.models import PolymarketMarket
@@ -18,6 +18,7 @@ from apps.markets.services.prices import (
 
 @pytest.mark.django_db
 def test_price_sync_service_uses_only_markets_enabled_for_price_sync() -> None:
+    now = datetime(2026, 7, 11, 11, 0, tzinfo=UTC)
     enabled_market = _create_market(
         external_id="1",
         sync_prices=True,
@@ -27,13 +28,14 @@ def test_price_sync_service_uses_only_markets_enabled_for_price_sync() -> None:
     clob_client = FakeClobPriceClient()
     storage = FakePriceStorageService()
 
-    result = PolymarketPriceSyncService(
-        clob_client=clob_client,
-        storage=storage,
-    ).sync_prices(
-        batch_size=10,
-        chunk_size_minutes=60 * 24,
-    )
+    with patch("apps.markets.services.prices.timezone.now", return_value=now):
+        result = PolymarketPriceSyncService(
+            clob_client=clob_client,
+            storage=storage,
+        ).sync_prices(
+            batch_size=10,
+            chunk_size_minutes=60 * 24,
+        )
 
     assert storage.ensure_table_called is True
     assert result.market_count == 1
@@ -54,6 +56,7 @@ def test_price_sync_service_uses_only_markets_enabled_for_price_sync() -> None:
 
 @pytest.mark.django_db
 def test_price_sync_service_resumes_from_latest_history_timestamp() -> None:
+    now = datetime(2026, 7, 11, 11, 5, tzinfo=UTC)
     market = _create_market(
         external_id="1",
         sync_prices=True,
@@ -63,13 +66,14 @@ def test_price_sync_service_resumes_from_latest_history_timestamp() -> None:
     clob_client = FakeClobPriceClient()
     storage = FakePriceStorageService(latest_history_timestamp=latest_timestamp)
 
-    PolymarketPriceSyncService(
-        clob_client=clob_client,
-        storage=storage,
-    ).sync_prices(
-        batch_size=10,
-        chunk_size_minutes=60 * 24,
-    )
+    with patch("apps.markets.services.prices.timezone.now", return_value=now):
+        PolymarketPriceSyncService(
+            clob_client=clob_client,
+            storage=storage,
+        ).sync_prices(
+            batch_size=10,
+            chunk_size_minutes=60 * 24,
+        )
 
     assert len(clob_client.history_requests) == 2
     expected_start_timestamp = latest_timestamp + timedelta(minutes=60)
@@ -89,21 +93,23 @@ def test_price_sync_service_resumes_from_latest_history_timestamp() -> None:
 
 @pytest.mark.django_db
 def test_price_sync_service_uses_daily_backfill_for_older_history() -> None:
+    now = datetime(2026, 7, 11, 11, 0, tzinfo=UTC)
     old_market = _create_market(
         external_id="1",
         sync_prices=True,
-        market_created_at=timezone.now().astimezone(UTC) - timedelta(days=45),
+        market_created_at=now - timedelta(days=45),
     )
     clob_client = FakeClobPriceClient()
     storage = FakePriceStorageService()
 
-    result = PolymarketPriceSyncService(
-        clob_client=clob_client,
-        storage=storage,
-    ).sync_prices(
-        batch_size=10,
-        chunk_size_minutes=60 * 24,
-    )
+    with patch("apps.markets.services.prices.timezone.now", return_value=now):
+        result = PolymarketPriceSyncService(
+            clob_client=clob_client,
+            storage=storage,
+        ).sync_prices(
+            batch_size=10,
+            chunk_size_minutes=60 * 24,
+        )
 
     assert result.price_count > 4
     assert len(clob_client.history_requests) > 2
@@ -120,6 +126,7 @@ def test_price_sync_service_uses_daily_backfill_for_older_history() -> None:
 
 @pytest.mark.django_db
 def test_price_sync_service_can_force_single_resolution() -> None:
+    now = datetime(2026, 7, 11, 11, 0, tzinfo=UTC)
     _create_market(
         external_id="1",
         sync_prices=True,
@@ -128,14 +135,15 @@ def test_price_sync_service_can_force_single_resolution() -> None:
     clob_client = FakeClobPriceClient()
     storage = FakePriceStorageService()
 
-    PolymarketPriceSyncService(
-        clob_client=clob_client,
-        storage=storage,
-    ).sync_prices(
-        batch_size=10,
-        fidelity_minutes=60,
-        chunk_size_minutes=60 * 24,
-    )
+    with patch("apps.markets.services.prices.timezone.now", return_value=now):
+        PolymarketPriceSyncService(
+            clob_client=clob_client,
+            storage=storage,
+        ).sync_prices(
+            batch_size=10,
+            fidelity_minutes=60,
+            chunk_size_minutes=60 * 24,
+        )
 
     assert len(clob_client.history_requests) == 2
     assert all(request["fidelity_minutes"] == 60 for request in clob_client.history_requests)
