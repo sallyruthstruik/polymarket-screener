@@ -4,6 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 
 import pytest
+from pytest import CaptureFixture
 
 from apps.markets.clients.polymarket import PolymarketGammaClient, PolymarketGammaMarket
 from apps.markets.models import PolymarketMarket
@@ -120,6 +121,24 @@ def test_sync_service_defaults_to_open_markets() -> None:
     service.sync_markets(include_closed=False, page_size=2, max_markets=1)
 
     assert client.closed_filters == [False]
+
+
+@pytest.mark.django_db
+def test_market_sync_service_logs_progress(capsys: CaptureFixture[str]) -> None:
+    client = FakeGammaClient()
+    service = PolymarketMarketSyncService(
+        client=client,
+        raw_payload_storage=FakeRawPayloadStorageService(),
+    )
+
+    result = service.sync_markets(include_closed=False, page_size=2, max_markets=1)
+    output = capsys.readouterr().err
+
+    assert result.fetched_count == 1
+    assert "Starting market sync include_closed=False" in output
+    assert "Using only open market filter" in output
+    assert "Market sync stored created market" in output
+    assert "Finished market sync fetched=1 created=1 updated=0" in output
 
 
 def test_raw_payload_storage_writes_clickhouse_row() -> None:

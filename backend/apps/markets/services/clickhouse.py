@@ -5,6 +5,10 @@ import clickhouse_connect
 from django.conf import settings
 from pydantic import BaseModel, ConfigDict
 
+from apps.core.logging import get_logger
+
+logger = get_logger("apps.markets.services.clickhouse")
+
 
 class ClickHouseSettings(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -30,6 +34,13 @@ class ClickHouseSettings(BaseModel):
 class ClickHouseClient:
     def __init__(self, clickhouse_settings: ClickHouseSettings | None = None) -> None:
         resolved_settings = clickhouse_settings or ClickHouseSettings.from_django_settings()
+        logger.info(
+            "Initializing ClickHouse client host=%s port=%s database=%s username=%s",
+            resolved_settings.host,
+            resolved_settings.port,
+            resolved_settings.database,
+            resolved_settings.username,
+        )
         self._client: Any = clickhouse_connect.get_client(
             host=resolved_settings.host,
             port=resolved_settings.port,
@@ -39,6 +50,7 @@ class ClickHouseClient:
         )
 
     def command(self, query: str) -> None:
+        logger.info("Executing ClickHouse command")
         self._client.command(query)
 
     def insert(
@@ -47,6 +59,12 @@ class ClickHouseClient:
         rows: Sequence[Sequence[object]],
         column_names: Sequence[str],
     ) -> None:
+        logger.info(
+            "Executing ClickHouse insert table=%s row_count=%s column_count=%s",
+            table,
+            len(rows),
+            len(column_names),
+        )
         self._client.insert(table, rows, column_names=column_names)
 
     def query(
@@ -54,5 +72,9 @@ class ClickHouseClient:
         query: str,
         parameters: dict[str, object] | None = None,
     ) -> Sequence[Sequence[object]]:
+        logger.info(
+            "Executing ClickHouse query has_parameters=%s",
+            parameters is not None and bool(parameters),
+        )
         result: Any = self._client.query(query, parameters=parameters)
         return cast(Sequence[Sequence[object]], result.result_rows)

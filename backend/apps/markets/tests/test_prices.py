@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import pytest
 from django.utils import timezone
+from pytest import CaptureFixture
 
 from apps.markets.clients.polymarket import PolymarketClobPriceClient, PolymarketPriceHistoryPoint
 from apps.markets.models import PolymarketMarket
@@ -78,12 +79,10 @@ def test_price_sync_service_resumes_from_latest_history_timestamp() -> None:
     ]
     assert len(hourly_requests) == 2
     assert all(
-        request["start_timestamp"] == expected_start_timestamp
-        for request in hourly_requests
+        request["start_timestamp"] == expected_start_timestamp for request in hourly_requests
     )
     assert all(
-        observation.market_external_id == market.external_id
-        for observation in storage.observations
+        observation.market_external_id == market.external_id for observation in storage.observations
     )
 
 
@@ -139,6 +138,31 @@ def test_price_sync_service_can_force_single_resolution() -> None:
 
     assert len(clob_client.history_requests) == 2
     assert all(request["fidelity_minutes"] == 60 for request in clob_client.history_requests)
+
+
+@pytest.mark.django_db
+def test_price_sync_service_logs_branches(capsys: CaptureFixture[str]) -> None:
+    _create_market(
+        external_id="1",
+        sync_prices=True,
+        market_created_at=datetime(2026, 7, 10, 11, 0, tzinfo=UTC),
+    )
+
+    result = PolymarketPriceSyncService(
+        clob_client=FakeClobPriceClient(),
+        storage=FakePriceStorageService(),
+    ).sync_prices(
+        batch_size=10,
+        fidelity_minutes=60,
+        chunk_size_minutes=60 * 24,
+    )
+    output = capsys.readouterr().err
+
+    assert result.market_count == 1
+    assert "Starting price sync batch_size=10" in output
+    assert "Using single price resolution fidelity_minutes=60" in output
+    assert "Processing market batch size=1 cumulative_market_count=1" in output
+    assert "Finished price sync markets=1 tokens=2 prices=4" in output
 
 
 def test_clob_price_client_parses_price_history_response() -> None:
