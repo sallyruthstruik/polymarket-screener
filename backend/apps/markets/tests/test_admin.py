@@ -71,6 +71,21 @@ def test_admin_action_disables_sync_prices(db: None) -> None:
     assert market.sync_prices is False
 
 
+def test_clickhouse_rows_links_to_filtered_inspectors() -> None:
+    admin_instance = PolymarketMarketAdmin(PolymarketMarket, AdminSite())
+    market = PolymarketMarket(external_id="market with space")
+
+    html = admin_instance.clickhouse_rows(market)
+
+    assert "/admin/markets/polymarketmarket/prices/?market_external_id=market+with+space" in html
+    assert (
+        "/admin/markets/polymarketmarket/raw-payloads/?market_external_id=market+with+space"
+        in html
+    )
+    assert "Prices" in html
+    assert "Raw payloads" in html
+
+
 def test_prices_view_returns_observations(monkeypatch: Any) -> None:
     admin_instance = PolymarketMarketAdmin(PolymarketMarket, AdminSite())
 

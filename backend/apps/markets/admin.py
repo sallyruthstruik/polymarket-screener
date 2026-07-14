@@ -1,10 +1,12 @@
 from typing import TYPE_CHECKING
+from urllib.parse import urlencode
 
 from django.contrib import admin
 from django.db.models import QuerySet
 from django.http import HttpRequest
 from django.template.response import TemplateResponse
-from django.urls import URLPattern, path
+from django.urls import URLPattern, path, reverse
+from django.utils.html import format_html
 from pydantic import BaseModel, ConfigDict
 
 from apps.markets.models import PolymarketMarket
@@ -36,6 +38,7 @@ class PolymarketRawPayloadInspectorFilters(BaseModel):
 class PolymarketMarketAdmin(PolymarketMarketAdminBase):
     list_display = (
         "external_id",
+        "clickhouse_rows",
         "question",
         "slug",
         "active",
@@ -48,7 +51,7 @@ class PolymarketMarketAdmin(PolymarketMarketAdminBase):
     )
     list_filter = ("sync_prices", "active", "closed", "archived", "restricted", "accepting_orders")
     search_fields = ("external_id", "condition_id", "slug", "question")
-    readonly_fields = ("first_synced_at", "last_synced_at")
+    readonly_fields = ("clickhouse_rows", "first_synced_at", "last_synced_at")
     ordering = ("-market_created_at", "-external_id")
     date_hierarchy = "market_created_at"
     actions = ("enable_sync_prices", "disable_sync_prices")
@@ -106,6 +109,19 @@ class PolymarketMarketAdmin(PolymarketMarketAdminBase):
             request,
             "admin/markets/polymarketmarket/raw_payloads.html",
             context,
+        )
+
+    @admin.display(description="ClickHouse rows")
+    def clickhouse_rows(self, market: PolymarketMarket) -> str:
+        query_string = urlencode({"market_external_id": market.external_id})
+        prices_url = f"{reverse('admin:markets_polymarketmarket_prices')}?{query_string}"
+        raw_payloads_url = (
+            f"{reverse('admin:markets_polymarketmarket_raw_payloads')}?{query_string}"
+        )
+        return format_html(
+            '<a href="{}">Prices</a> | <a href="{}">Raw payloads</a>',
+            prices_url,
+            raw_payloads_url,
         )
 
     @admin.action(description="Enable price sync for selected markets")
