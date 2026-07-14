@@ -71,6 +71,35 @@ def test_admin_action_disables_sync_prices(db: None) -> None:
     assert market.sync_prices is False
 
 
+def test_polymarket_link_uses_market_slug() -> None:
+    market = PolymarketMarket(
+        external_id="1",
+        condition_id="condition-1",
+        slug="market-1",
+        question="Market 1",
+    )
+    admin_instance = PolymarketMarketAdmin(PolymarketMarket, AdminSite())
+
+    rendered_link = admin_instance.polymarket_link(market)
+
+    assert rendered_link == (
+        '<a href="https://polymarket.com/event/market-1" '
+        'target="_blank" rel="noopener noreferrer">Open market</a>'
+    )
+
+
+def test_polymarket_link_returns_dash_without_slug() -> None:
+    market = PolymarketMarket(
+        external_id="1",
+        condition_id="condition-1",
+        slug="",
+        question="Market 1",
+    )
+    admin_instance = PolymarketMarketAdmin(PolymarketMarket, AdminSite())
+
+    assert admin_instance.polymarket_link(market) == "-"
+
+
 def test_prices_view_returns_observations(monkeypatch: Any) -> None:
     admin_instance = PolymarketMarketAdmin(PolymarketMarket, AdminSite())
 
