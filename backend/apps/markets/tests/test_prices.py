@@ -18,7 +18,11 @@ from apps.markets.services.prices import (
 
 
 @pytest.mark.django_db
-def test_price_sync_service_uses_only_markets_enabled_for_price_sync() -> None:
+def test_price_sync_service_uses_only_markets_enabled_for_price_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frozen_now = datetime(2026, 7, 11, 11, 0, tzinfo=UTC)
+    monkeypatch.setattr(timezone, "now", lambda: frozen_now)
     enabled_market = _create_market(
         external_id="1",
         sync_prices=True,
@@ -54,7 +58,11 @@ def test_price_sync_service_uses_only_markets_enabled_for_price_sync() -> None:
 
 
 @pytest.mark.django_db
-def test_price_sync_service_resumes_from_latest_history_timestamp() -> None:
+def test_price_sync_service_resumes_from_latest_history_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frozen_now = datetime(2026, 7, 11, 11, 0, tzinfo=UTC)
+    monkeypatch.setattr(timezone, "now", lambda: frozen_now)
     market = _create_market(
         external_id="1",
         sync_prices=True,
@@ -87,11 +95,15 @@ def test_price_sync_service_resumes_from_latest_history_timestamp() -> None:
 
 
 @pytest.mark.django_db
-def test_price_sync_service_uses_daily_backfill_for_older_history() -> None:
+def test_price_sync_service_uses_daily_backfill_for_older_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frozen_now = datetime(2026, 7, 11, 11, 0, tzinfo=UTC)
+    monkeypatch.setattr(timezone, "now", lambda: frozen_now)
     old_market = _create_market(
         external_id="1",
         sync_prices=True,
-        market_created_at=timezone.now().astimezone(UTC) - timedelta(days=45),
+        market_created_at=frozen_now - timedelta(days=45),
     )
     clob_client = FakeClobPriceClient()
     storage = FakePriceStorageService()
@@ -118,7 +130,11 @@ def test_price_sync_service_uses_daily_backfill_for_older_history() -> None:
 
 
 @pytest.mark.django_db
-def test_price_sync_service_can_force_single_resolution() -> None:
+def test_price_sync_service_can_force_single_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frozen_now = datetime(2026, 7, 11, 11, 0, tzinfo=UTC)
+    monkeypatch.setattr(timezone, "now", lambda: frozen_now)
     _create_market(
         external_id="1",
         sync_prices=True,

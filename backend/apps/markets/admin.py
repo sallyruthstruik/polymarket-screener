@@ -41,6 +41,7 @@ class PolymarketMarketAdmin(PolymarketMarketAdminBase):
         "clickhouse_rows",
         "question",
         "slug",
+        "polymarket_link",
         "active",
         "closed",
         "accepting_orders",
@@ -51,7 +52,7 @@ class PolymarketMarketAdmin(PolymarketMarketAdminBase):
     )
     list_filter = ("sync_prices", "active", "closed", "archived", "restricted", "accepting_orders")
     search_fields = ("external_id", "condition_id", "slug", "question")
-    readonly_fields = ("clickhouse_rows", "first_synced_at", "last_synced_at")
+    readonly_fields = ("clickhouse_rows", "polymarket_link", "first_synced_at", "last_synced_at")
     ordering = ("-market_created_at", "-external_id")
     date_hierarchy = "market_created_at"
     actions = ("enable_sync_prices", "disable_sync_prices")
@@ -142,6 +143,15 @@ class PolymarketMarketAdmin(PolymarketMarketAdminBase):
         updated_count = queryset.update(sync_prices=False)
         self.message_user(request, f"Disabled price sync for {updated_count} markets.")
 
+    @admin.display(description="Polymarket")
+    def polymarket_link(self, obj: PolymarketMarket) -> str:
+        if obj.slug == "":
+            return "-"
+        return format_html(
+            '<a href="{}" target="_blank" rel="noopener noreferrer">Open market</a>',
+            self._build_polymarket_market_url(obj),
+        )
+
     def _get_price_storage(self) -> PolymarketPriceStorageService:
         return PolymarketPriceStorageService()
 
@@ -172,3 +182,6 @@ class PolymarketMarketAdmin(PolymarketMarketAdminBase):
         except ValueError:
             limit = 100
         return min(max(limit, 1), 500)
+
+    def _build_polymarket_market_url(self, obj: PolymarketMarket) -> str:
+        return f"https://polymarket.com/event/{obj.slug}"
