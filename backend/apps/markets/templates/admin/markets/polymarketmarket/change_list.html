@@ -1,11 +1,130 @@
-{% extends "admin/change_list.html" %}
+{% extends "admin/base_site.html" %}
 
-{% block object-tools-items %}
-  <li>
-    <a href="{% url 'admin:markets_polymarketmarket_prices' %}">Inspect prices</a>
-  </li>
-  <li>
-    <a href="{% url 'admin:markets_polymarketmarket_raw_payloads' %}">Inspect raw payloads</a>
-  </li>
-  {{ block.super }}
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Home</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+    &rsaquo; {{ opts.verbose_name_plural|capfirst }}
+  </div>
+{% endblock %}
+
+{% block content %}
+  <div id="content-main">
+    <form method="get" style="margin-bottom: 1rem;">
+      <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: end;">
+        <div>
+          <label for="id_q">Search</label><br>
+          <input id="id_q" type="text" name="q" value="{{ filters.search }}" placeholder="External id, condition id, slug, question">
+        </div>
+        <div>
+          <label for="id_active">Active</label><br>
+          <select id="id_active" name="active">
+            <option value="" {% if filters.active == None %}selected{% endif %}>Any</option>
+            <option value="true" {% if filters.active == True %}selected{% endif %}>Yes</option>
+            <option value="false" {% if filters.active == False %}selected{% endif %}>No</option>
+          </select>
+        </div>
+        <div>
+          <label for="id_closed">Closed</label><br>
+          <select id="id_closed" name="closed">
+            <option value="" {% if filters.closed == None %}selected{% endif %}>Any</option>
+            <option value="true" {% if filters.closed == True %}selected{% endif %}>Yes</option>
+            <option value="false" {% if filters.closed == False %}selected{% endif %}>No</option>
+          </select>
+        </div>
+        <div>
+          <label for="id_archived">Archived</label><br>
+          <select id="id_archived" name="archived">
+            <option value="" {% if filters.archived == None %}selected{% endif %}>Any</option>
+            <option value="true" {% if filters.archived == True %}selected{% endif %}>Yes</option>
+            <option value="false" {% if filters.archived == False %}selected{% endif %}>No</option>
+          </select>
+        </div>
+        <div>
+          <label for="id_sync_prices">Price sync</label><br>
+          <select id="id_sync_prices" name="sync_prices">
+            <option value="" {% if filters.sync_prices == None %}selected{% endif %}>Any</option>
+            <option value="true" {% if filters.sync_prices == True %}selected{% endif %}>Enabled</option>
+            <option value="false" {% if filters.sync_prices == False %}selected{% endif %}>Disabled</option>
+          </select>
+        </div>
+        <div>
+          <label for="id_page_size">Page size</label><br>
+          <input id="id_page_size" type="number" min="10" max="200" name="page_size" value="{{ page_size }}">
+        </div>
+        <div>
+          <button type="submit" class="button">Apply</button>
+        </div>
+      </div>
+    </form>
+
+    <form method="post">
+      {% csrf_token %}
+      <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem;">
+        <select name="action">
+          <option value="enable_sync_prices">Enable price sync</option>
+          <option value="disable_sync_prices">Disable price sync</option>
+        </select>
+        <button type="submit" class="button">Run action</button>
+      </div>
+
+      <table id="result_list">
+        <thead>
+          <tr>
+            <th style="width: 32px;"></th>
+            <th>External id</th>
+            <th>Question</th>
+            <th>Slug</th>
+            <th>State</th>
+            <th>Price sync</th>
+            <th>Created</th>
+            <th>Polymarket</th>
+            <th>ClickHouse</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for market in markets %}
+            <tr>
+              <td><input type="checkbox" name="_selected_action" value="{{ market.external_id }}"></td>
+              <td><a href="{% url 'admin:markets_polymarketmarket_change' market.external_id %}">{{ market.external_id }}</a></td>
+              <td>{{ market.question }}</td>
+              <td>{{ market.slug }}</td>
+              <td>active={{ market.active }} closed={{ market.closed }} archived={{ market.archived }}</td>
+              <td>{{ market.sync_prices }}</td>
+              <td>{{ market.market_created_at|default:"-" }}</td>
+              <td>
+                {% if market.slug %}
+                  <a href="https://polymarket.com/event/{{ market.slug }}" target="_blank" rel="noopener noreferrer">Open market</a>
+                {% else %}
+                  -
+                {% endif %}
+              </td>
+              <td>{{ model_admin.clickhouse_rows(market) }}</td>
+            </tr>
+          {% empty %}
+            <tr>
+              <td colspan="9">No markets found.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </form>
+
+    <div style="display: flex; gap: 1rem; align-items: center; margin-top: 1rem;">
+      <span>Total: {{ total_count }}</span>
+      {% if has_previous %}
+        <a href="?{{ query_string_without_page }}{% if query_string_without_page %}&{% endif %}p={{ page_number|add:-1 }}">Previous</a>
+      {% endif %}
+      <span>Page {{ page_number }} of {{ total_pages }}</span>
+      {% if has_next %}
+        <a href="?{{ query_string_without_page }}{% if query_string_without_page %}&{% endif %}p={{ page_number|add:1 }}">Next</a>
+      {% endif %}
+    </div>
+
+    <div style="margin-top: 1rem;">
+      <a href="{% url 'admin:markets_polymarketmarket_prices' %}">Inspect prices</a>
+      |
+      <a href="{% url 'admin:markets_polymarketmarket_raw_payloads' %}">Inspect raw payloads</a>
+    </div>
+  </div>
 {% endblock %}

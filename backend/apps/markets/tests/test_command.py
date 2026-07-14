@@ -8,10 +8,10 @@ from django.core.management.base import CommandError
 from pytest import MonkeyPatch
 
 from apps.markets.management.commands import (
+    set_polymarket_market_sync_prices,
     sync_polymarket_markets,
     sync_polymarket_prices,
 )
-from apps.markets.models import PolymarketMarket
 from apps.markets.services.polymarket import PolymarketMarketSyncResult
 from apps.markets.services.prices import PolymarketPriceSyncResult
 
@@ -68,6 +68,26 @@ class FakePriceSyncService:
         )
 
 
+class FakeMarketStorageService:
+    calls: ClassVar[list[dict[str, object]]] = []
+
+    def set_sync_prices(
+        self,
+        *,
+        external_ids: list[str] | None,
+        enabled: bool,
+        update_all: bool = False,
+    ) -> int:
+        self.calls.append(
+            {
+                "external_ids": external_ids,
+                "enabled": enabled,
+                "update_all": update_all,
+            }
+        )
+        return 2
+
+
 def test_sync_polymarket_markets_command_uses_service_options(
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -120,9 +140,15 @@ def test_sync_polymarket_prices_command_uses_service_options(
     assert "markets=2, tokens=4, prices=8" in stdout.getvalue()
 
 
-def test_set_polymarket_market_sync_prices_updates_selected_markets(db: None) -> None:
-    enabled_market = _create_market(external_id="1", sync_prices=False)
-    untouched_market = _create_market(external_id="2", sync_prices=False)
+def test_set_polymarket_market_sync_prices_uses_clickhouse_storage(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    FakeMarketStorageService.calls = []
+    monkeypatch.setattr(
+        set_polymarket_market_sync_prices,
+        "PolymarketMarketStorageService",
+        FakeMarketStorageService,
+    )
     stdout = StringIO()
 
     call_command(
@@ -133,31 +159,32 @@ def test_set_polymarket_market_sync_prices_updates_selected_markets(db: None) ->
         stdout=stdout,
     )
 
-    enabled_market.refresh_from_db()
-    untouched_market.refresh_from_db()
-    assert enabled_market.sync_prices is True
-    assert untouched_market.sync_prices is False
-    assert "enabled=True, updated=1" in stdout.getvalue()
+    assert FakeMarketStorageService.calls == [
+        {"external_ids": ["1"], "enabled": True, "update_all": False}
+    ]
+    assert "enabled=True, updated=2" in stdout.getvalue()
 
 
-def test_set_polymarket_market_sync_prices_updates_all_markets(db: None) -> None:
-    first_market = _create_market(external_id="1", sync_prices=False)
-    second_market = _create_market(external_id="2", sync_prices=False)
-    stdout = StringIO()
+def test_set_polymarket_market_sync_prices_updates_all_markets(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    FakeMarketStorageService.calls = []
+    monkeypatch.setattr(
+        set_polymarket_market_sync_prices,
+        "PolymarketMarketStorageService",
+        FakeMarketStorageService,
+    )
 
     call_command(
         "set_polymarket_market_sync_prices",
         "--all",
         "--enabled",
-        "true",
-        stdout=stdout,
+        "false",
     )
 
-    first_market.refresh_from_db()
-    second_market.refresh_from_db()
-    assert first_market.sync_prices is True
-    assert second_market.sync_prices is True
-    assert "enabled=True, updated=2" in stdout.getvalue()
+    assert FakeMarketStorageService.calls == [
+        {"external_ids": [], "enabled": False, "update_all": True}
+    ]
 
 
 def test_set_polymarket_market_sync_prices_rejects_invalid_selection() -> None:
@@ -169,19 +196,3 @@ def test_set_polymarket_market_sync_prices_rejects_invalid_selection() -> None:
             "--enabled",
             "true",
         )
-
-
-def _create_market(*, external_id: str, sync_prices: bool) -> PolymarketMarket:
-    return PolymarketMarket.objects.create(
-        external_id=external_id,
-        condition_id=f"condition-{external_id}",
-        slug=f"market-{external_id}",
-        question=f"Market {external_id}",
-        active=True,
-        closed=False,
-        archived=False,
-        restricted=False,
-        accepting_orders=True,
-        clob_token_ids=[f"token-{external_id}-yes", f"token-{external_id}-no"],
-        sync_prices=sync_prices,
-    )

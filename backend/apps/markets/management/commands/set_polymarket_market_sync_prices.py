@@ -2,7 +2,7 @@ from typing import cast
 
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 
-from apps.markets.models import PolymarketMarket
+from apps.markets.services.polymarket import PolymarketMarketStorageService
 
 
 class Command(BaseCommand):
@@ -38,12 +38,11 @@ class Command(BaseCommand):
             msg = "Pass at least one external id or use --all"
             raise CommandError(msg)
 
-        queryset = (
-            PolymarketMarket.objects.all()
-            if update_all
-            else PolymarketMarket.objects.filter(external_id__in=external_ids)
+        updated_count = PolymarketMarketStorageService().set_sync_prices(
+            external_ids=external_ids,
+            enabled=enabled,
+            update_all=update_all,
         )
-        updated_count = queryset.update(sync_prices=enabled)
         output = (
             "Updated Polymarket market price sync: "
             f"enabled={enabled}, "
